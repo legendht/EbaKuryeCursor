@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { connectSocket } from '@/lib/socket';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MAPBOX_TOKEN, ISTANBUL_CENTER } from '@/lib/mapbox';
 
@@ -11,6 +10,8 @@ interface CourierLocation {
   lng: number;
   heading?: number;
   vehicleType?: string;
+  fullName?: string;
+  status?: string;
 }
 
 interface AdminLiveMapProps {
@@ -18,16 +19,30 @@ interface AdminLiveMapProps {
   mini?: boolean;
 }
 
+const VEHICLE_EMOJI: Record<string, string> = {
+  motorcycle: '🏍️',
+  car: '🚗',
+  van: '🚐',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  online: '#22c55e',
+  break: '#eab308',
+  busy: '#f97316',
+  offline: '#64748b',
+};
+
 export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
   const markersRef = useRef<Map<string, unknown>>(new Map());
   const [mapLoaded, setMapLoaded] = useState(false);
   const [courierCount, setCourierCount] = useState(0);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Load mapboxgl script
+  // Load Mapbox GL JS
   useEffect(() => {
-    if (window.mapboxgl) { setMapLoaded(true); return; }
+    if ((window as Window & { mapboxgl?: unknown }).mapboxgl) { setMapLoaded(true); return; }
     const link = document.createElement('link');
     link.rel = 'stylesheet';
     link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css';
@@ -42,7 +57,8 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
   // Initialize map
   useEffect(() => {
     if (!mapLoaded || !mapContainer.current || mapRef.current) return;
-    const mapboxgl = window.mapboxgl;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mapboxgl = (window as any).mapboxgl;
     if (!mapboxgl) return;
 
     mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -56,79 +72,106 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
 
     if (!mini) {
       map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+      map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
     }
 
     return () => { map.remove(); mapRef.current = null; };
   }, [mapLoaded, mini]);
 
-  // Load initial courier positions from DB
-  useEffect(() => {
-    if (!mapRef.current) return;
-    const supabase = createClient();
-
-    supabase
-      .from('couriers')
-      .select('id, current_lat, current_lng, vehicle_type, status')
-      .in('status', ['online', 'busy'])
-      .not('current_lat', 'is', null)
-      .then(({ data }) => {
-        if (!data) return;
-        setCourierCount(data.length);
-        data.forEach((c) => updateCourierMarker({ courierId: c.id, lat: c.current_lat!, lng: c.current_lng!, vehicleType: c.vehicle_type }));
-      });
-  }, [mapLoaded]);
-
-  const updateCourierMarker = (loc: CourierLocation) => {
-    const map = mapRef.current as { addTo?: unknown } | null;
+  const updateCourierMarker = useCallback((loc: CourierLocation) => {
+    const map = mapRef.current;
     if (!map) return;
-    const mapboxgl = window.mapboxgl;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mapboxgl = (window as any).mapboxgl;
     if (!mapboxgl) return;
 
-    const emoji = loc.vehicleType === 'motorcycle' ? '🏍️' : loc.vehicleType === 'van' ? '🚐' : '🚗';
+    const emoji = VEHICLE_EMOJI[loc.vehicleType || 'motorcycle'] ?? '🏍️';
+    const borderColor = STATUS_COLOR[loc.status || 'online'] ?? '#22c55e';
 
     if (markersRef.current.has(loc.courierId)) {
-      const marker = markersRef.current.get(loc.courierId) as { setLngLat: (c: [number, number]) => void };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const marker = markersRef.current.get(loc.courierId) as any;
       marker.setLngLat([loc.lng, loc.lat]);
+      // Update border color
+      const el = marker.getElement();
+      if (el) el.style.borderColor = borderColor;
     } else {
       const el = document.createElement('div');
-      el.className = 'cursor-pointer';
-      el.style.cssText = 'width:36px;height:36px;background:#1e4976;border:2px solid #f97316;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(249,115,22,0.4);';
+      el.style.cssText = [
+        'width:40px', 'height:40px', 'background:#0f2340',
+        `border:2.5px solid ${borderColor}`, 'border-radius:50%',
+        'display:flex', 'align-items:center', 'justify-content:center',
+        'font-size:20px', `box-shadow:0 0 10px ${borderColor}60`,
+        'cursor:pointer', 'transition:border-color 0.3s',
+      ].join(';');
       el.innerHTML = emoji;
-      el.title = `Kurye: ${loc.courierId.slice(0, 8)}`;
+
+      const popup = new mapboxgl.Popup({ offset: 25, closeButton: false })
+        .setHTML(`<div style="color:#0a1628;font-size:12px;font-weight:600">${loc.fullName || 'Kurye'}<br/>${loc.status || 'online'}</div>`);
 
       const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([loc.lng, loc.lat])
-        .addTo(map as Parameters<typeof mapboxgl.Marker.prototype.addTo>[0]);
-      markersRef.current.set(loc.courierId, marker);
-      setCourierCount(markersRef.current.size);
-    }
-  };
+        .setPopup(popup)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .addTo(map as any);
 
-  // Socket.io live updates
-  useEffect(() => {
+      el.addEventListener('mouseenter', () => marker.togglePopup());
+      el.addEventListener('mouseleave', () => marker.togglePopup());
+
+      markersRef.current.set(loc.courierId, marker);
+    }
+  }, []);
+
+  // Remove offline couriers from map
+  const removeOfflineCouriers = useCallback((onlineIds: Set<string>) => {
+    markersRef.current.forEach((marker, id) => {
+      if (!onlineIds.has(id)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (marker as any).remove();
+        markersRef.current.delete(id);
+      }
+    });
+    setCourierCount(markersRef.current.size);
+  }, []);
+
+  // Polling: fetch courier locations from Supabase every 3 seconds
+  const fetchCouriers = useCallback(async () => {
+    if (!mapRef.current) return;
     const supabase = createClient();
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) return;
-      const socket = connectSocket();
-      socket.emit('admin:join:tracking', { token: session.access_token });
-      socket.on('admin:tracking:snapshot', (snapshot: Record<string, CourierLocation & { vehicleType?: string }>) => {
-        Object.entries(snapshot).forEach(([cid, loc]) => {
-          const { courierId: _unused, ...rest } = loc as CourierLocation & { vehicleType?: string };
-          void _unused;
-          updateCourierMarker({ courierId: cid, ...rest });
-        });
-      });
-      socket.on('courier:location:update', (data: CourierLocation) => {
-        updateCourierMarker(data);
+    const { data } = await supabase
+      .from('couriers')
+      .select('id, current_lat, current_lng, vehicle_type, status, profile:profiles(full_name)')
+      .in('status', ['online', 'busy', 'break'])
+      .not('current_lat', 'is', null)
+      .not('current_lng', 'is', null);
+
+    if (!data) return;
+
+    const onlineIds = new Set<string>();
+    data.forEach((c) => {
+      onlineIds.add(c.id);
+      updateCourierMarker({
+        courierId: c.id,
+        lat: c.current_lat as number,
+        lng: c.current_lng as number,
+        vehicleType: c.vehicle_type,
+        status: c.status,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        fullName: (c.profile as any)?.full_name ?? 'Kurye',
       });
     });
 
-    return () => {
-      const socket = connectSocket();
-      socket.off('admin:tracking:snapshot');
-      socket.off('courier:location:update');
-    };
-  }, [mapLoaded]);
+    removeOfflineCouriers(onlineIds);
+    setLastUpdate(new Date());
+  }, [updateCourierMarker, removeOfflineCouriers]);
+
+  // Start polling after map loads
+  useEffect(() => {
+    if (!mapLoaded) return;
+    fetchCouriers();
+    const interval = setInterval(fetchCouriers, 3000);
+    return () => clearInterval(interval);
+  }, [mapLoaded, fetchCouriers]);
 
   return (
     <div className="relative">
@@ -141,11 +184,33 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
           </div>
         </div>
       )}
-      {/* Overlay stats */}
-      <div className="absolute top-3 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex items-center gap-2">
-        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-        <span>{courierCount} aktif kurye</span>
+      {/* Stats overlay */}
+      <div className="absolute top-3 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <span>{courierCount} aktif kurye</span>
+        </div>
+        {lastUpdate && (
+          <span className="text-slate-500">
+            {lastUpdate.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
       </div>
+      {/* Legend */}
+      {!mini && (
+        <div className="absolute bottom-6 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex flex-col gap-1.5">
+          {[
+            { color: '#22c55e', label: 'Online' },
+            { color: '#eab308', label: 'Mola' },
+            { color: '#f97316', label: 'Meşgul' },
+          ].map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+              <span>{label}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
