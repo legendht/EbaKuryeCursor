@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --brand-blue: #0f2340;
+  --brand-blue-mid: #1a3a5c;
+  --brand-blue-light: #1e4976;
+  --brand-orange: #f97316;
+  --brand-orange-dark: #ea6c0a;
+}
+
+@theme inline {
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-blue-mid: var(--brand-blue-mid);
+  --color-brand-blue-light: var(--brand-blue-light);
+  --color-brand-orange: var(--brand-orange);
+  --color-brand-orange-dark: var(--brand-orange-dark);
+  --color-background: #0a1628;
+  --color-foreground: #f0f4f8;
+  --font-sans: 'Inter', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0a1628;
+  color: #f0f4f8;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Mapbox overrides */
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-attrib {
+  display: none !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0f2340;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e4976;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #f97316;
+}
+
+/* Glow effect for orange buttons */
+.btn-orange-glow {
+  box-shadow: 0 0 20px rgba(249, 115, 22, 0.4);
+}
+.btn-orange-glow:hover {
+  box-shadow: 0 0 30px rgba(249, 115, 22, 0.6);
+}
+
+/* Animated gradient background for hero */
+.hero-gradient {
+  background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(249, 115, 22, 0.15) 0%, transparent 70%),
+    linear-gradient(180deg, #0f2340 0%, #0a1628 100%);
+}
+
+/* Glass card */
+.glass-card {
+  background: rgba(30, 73, 118, 0.15);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 73, 118, 0.3);
+}

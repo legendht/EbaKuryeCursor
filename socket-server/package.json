@@ -1,0 +1,15 @@
+{
+  "name": "eba-kurye-socket-server",
+  "version": "1.0.0",
+  "description": "EBA Kurye Socket.io Real-time Server",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.x.x",
+    "dotenv": "^16.x.x",
+    "socket.io": "^4.x.x"
+  }
+}

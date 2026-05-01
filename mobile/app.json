@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "EBA Kurye",
+    "slug": "eba-kurye",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a1628"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.ebakurye.courier",
+      "infoPlist": {
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "EBA Kurye, siparişleri yönetmek için arka planda konumunuza ihtiyaç duyar.",
+        "NSLocationAlwaysUsageDescription": "EBA Kurye, teslimat sırasında arka planda konumunuzu takip eder.",
+        "NSCameraUsageDescription": "Teslimat kanıtı fotoğrafı çekmek için kamera gereklidir."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a1628"
+      },
+      "package": "com.ebakurye.courier",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "EBA Kurye arka planda konumunuzu takip eder.",
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Teslimat fotoğrafı için kamera izni gereklidir."
+        }
+      ]
+    ]
+  }
+}
