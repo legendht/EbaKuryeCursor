@@ -6,7 +6,10 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL!, {
+    // Same origin when running combined server; fallback to env var
+    const url = process.env.NEXT_PUBLIC_SOCKET_URL || window.location.origin;
+    socket = io(url, {
+      path: '/socket.io/',
       transports: ['websocket', 'polling'],
       autoConnect: false,
     });

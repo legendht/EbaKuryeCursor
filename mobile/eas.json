@@ -18,7 +18,7 @@
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://wxlpsabcetinkxbwczvg.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4bHBzYWJjZXRpbmt4YndjenZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MTE4NjYsImV4cCI6MjA5MzE4Nzg2Nn0.wASjuS9poEUptIh3wiyAFWOz_X_K07TqGSYk1My2WW4",
-        "EXPO_PUBLIC_SOCKET_URL": "http://76.13.141.249:3001",
+        "EXPO_PUBLIC_SOCKET_URL": "https://www.ebakurye.com",
         "EXPO_PUBLIC_APP_URL": "https://www.ebakurye.com"
       }
     },
