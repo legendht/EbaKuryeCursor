@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MAPBOX_TOKEN, ISTANBUL_CENTER } from '@/lib/mapbox';
+import { io, Socket } from 'socket.io-client';
 
 interface CourierLocation {
   courierId: string;
@@ -36,8 +37,11 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
   const markersRef = useRef<Map<string, unknown>>(new Map());
+  const socketRef = useRef<Socket | null>(null);
+  const courierMetaRef = useRef<Map<string, { vehicleType: string; fullName: string; status: string }>>(new Map());
   const [mapLoaded, setMapLoaded] = useState(false);
   const [courierCount, setCourierCount] = useState(0);
+  const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   // Load Mapbox GL JS
@@ -85,14 +89,18 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
     const mapboxgl = (window as any).mapboxgl;
     if (!mapboxgl) return;
 
-    const emoji = VEHICLE_EMOJI[loc.vehicleType || 'motorcycle'] ?? '🏍️';
-    const borderColor = STATUS_COLOR[loc.status || 'online'] ?? '#22c55e';
+    const meta = courierMetaRef.current.get(loc.courierId);
+    const vehicleType = loc.vehicleType || meta?.vehicleType || 'motorcycle';
+    const status = loc.status || meta?.status || 'online';
+    const fullName = loc.fullName || meta?.fullName || 'Kurye';
+
+    const emoji = VEHICLE_EMOJI[vehicleType] ?? '🏍️';
+    const borderColor = STATUS_COLOR[status] ?? '#22c55e';
 
     if (markersRef.current.has(loc.courierId)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const marker = markersRef.current.get(loc.courierId) as any;
       marker.setLngLat([loc.lng, loc.lat]);
-      // Update border color
       const el = marker.getElement();
       if (el) el.style.borderColor = borderColor;
     } else {
@@ -107,7 +115,7 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
       el.innerHTML = emoji;
 
       const popup = new mapboxgl.Popup({ offset: 25, closeButton: false })
-        .setHTML(`<div style="color:#0a1628;font-size:12px;font-weight:600">${loc.fullName || 'Kurye'}<br/>${loc.status || 'online'}</div>`);
+        .setHTML(`<div style="color:#0a1628;font-size:12px;font-weight:600">${fullName}<br/>${status}</div>`);
 
       const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([loc.lng, loc.lat])
@@ -120,58 +128,116 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
 
       markersRef.current.set(loc.courierId, marker);
     }
-  }, []);
-
-  // Remove offline couriers from map
-  const removeOfflineCouriers = useCallback((onlineIds: Set<string>) => {
-    markersRef.current.forEach((marker, id) => {
-      if (!onlineIds.has(id)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (marker as any).remove();
-        markersRef.current.delete(id);
-      }
-    });
     setCourierCount(markersRef.current.size);
+    setLastUpdate(new Date());
   }, []);
 
-  // Polling: fetch courier locations from Supabase every 3 seconds
-  const fetchCouriers = useCallback(async () => {
-    if (!mapRef.current) return;
+  // Fetch courier metadata (vehicle type, name, status) from DB
+  const fetchCourierMeta = useCallback(async () => {
     const supabase = createClient();
     const { data } = await supabase
       .from('couriers')
-      .select('id, current_lat, current_lng, vehicle_type, status, profile:profiles(full_name)')
-      .in('status', ['online', 'busy', 'break'])
-      .not('current_lat', 'is', null)
-      .not('current_lng', 'is', null);
-
-    if (!data) return;
-
-    const onlineIds = new Set<string>();
-    data.forEach((c) => {
-      onlineIds.add(c.id);
-      updateCourierMarker({
-        courierId: c.id,
-        lat: c.current_lat as number,
-        lng: c.current_lng as number,
-        vehicleType: c.vehicle_type,
-        status: c.status,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        fullName: (c.profile as any)?.full_name ?? 'Kurye',
+      .select('id, vehicle_type, status, profile:profiles(full_name)')
+      .in('status', ['online', 'busy', 'break']);
+    if (data) {
+      data.forEach((c) => {
+        courierMetaRef.current.set(c.id, {
+          vehicleType: c.vehicle_type,
+          status: c.status,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          fullName: (c.profile as any)?.full_name ?? 'Kurye',
+        });
       });
-    });
+    }
+    return data;
+  }, []);
 
-    removeOfflineCouriers(onlineIds);
-    setLastUpdate(new Date());
-  }, [updateCourierMarker, removeOfflineCouriers]);
+  // Remove markers for offline couriers
+  const removeMarker = useCallback((courierId: string) => {
+    if (markersRef.current.has(courierId)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (markersRef.current.get(courierId) as any).remove();
+      markersRef.current.delete(courierId);
+      setCourierCount(markersRef.current.size);
+    }
+  }, []);
 
-  // Start polling after map loads
+  // Connect to Socket.io and join admin tracking room
   useEffect(() => {
     if (!mapLoaded) return;
-    fetchCouriers();
-    const interval = setInterval(fetchCouriers, 3000);
-    return () => clearInterval(interval);
-  }, [mapLoaded, fetchCouriers]);
+
+    const supabase = createClient();
+
+    const connectSocket = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      // Fetch courier metadata first
+      await fetchCourierMeta();
+
+      const socketUrl = typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_SOCKET_URL || '');
+      const socket = io(socketUrl, {
+        path: '/socket.io/',
+        transports: ['websocket', 'polling'],
+      });
+      socketRef.current = socket;
+
+      socket.on('connect', () => {
+        setConnected(true);
+        socket.emit('admin:join:tracking', { token: session.access_token });
+      });
+
+      socket.on('disconnect', () => setConnected(false));
+
+      // Snapshot of all current courier locations on join
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      socket.on('admin:tracking:snapshot', (snapshot: Record<string, any>) => {
+        Object.entries(snapshot).forEach(([courierId, loc]) => {
+          if (loc?.lat && loc?.lng) {
+            updateCourierMarker({ courierId, lat: loc.lat, lng: loc.lng, heading: loc.heading });
+          }
+        });
+      });
+
+      // Real-time location updates from couriers
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      socket.on('courier:location:update', (data: any) => {
+        const { courierId, lat, lng, heading } = data;
+        if (lat && lng) {
+          updateCourierMarker({ courierId, lat, lng, heading });
+        }
+      });
+
+      // Courier status change
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      socket.on('courier:status:update', (data: any) => {
+        const { courierId, status } = data;
+        const meta = courierMetaRef.current.get(courierId);
+        if (meta) {
+          meta.status = status;
+          courierMetaRef.current.set(courierId, meta);
+        }
+        if (status === 'offline') {
+          removeMarker(courierId);
+        } else {
+          // Update marker color
+          if (markersRef.current.has(courierId)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const marker = markersRef.current.get(courierId) as any;
+            const el = marker.getElement();
+            if (el) el.style.borderColor = STATUS_COLOR[status] ?? '#64748b';
+          }
+        }
+      });
+    };
+
+    connectSocket();
+
+    return () => {
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+    };
+  }, [mapLoaded, updateCourierMarker, removeMarker, fetchCourierMeta]);
 
   return (
     <div className="relative">
@@ -187,8 +253,12 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
       {/* Stats overlay */}
       <div className="absolute top-3 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex items-center gap-3">
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
           <span>{courierCount} aktif kurye</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
+          <span className="text-slate-500">{connected ? 'Canlı' : 'Bağlanıyor...'}</span>
         </div>
         {lastUpdate && (
           <span className="text-slate-500">

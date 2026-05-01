@@ -130,6 +130,8 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
         stopLocationTracking();
         await supabase.from('couriers').update({ status: 'offline', break_reason: null }).eq('id', courierId);
       }
+      // Notify socket server about status change so admin dashboard updates instantly
+      getSocket()?.emit('courier:status:change', { courierId, status: newStatus });
     } catch (err: unknown) {
       setCourierStatus(prev);
       Alert.alert('Hata', err instanceof Error ? err.message : 'Durum değiştirilemedi');

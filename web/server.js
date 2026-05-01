@@ -28,6 +28,8 @@ const courierSockets   = new Map(); // courierId -> socketId
 
 app.prepare().then(() => {
   const httpServer = createServer((req, res) => {
+    // Socket.io polling requests are handled by the Socket.io engine, not Next.js
+    if (req.url && req.url.startsWith('/socket.io/')) return;
     const parsedUrl = parse(req.url, true);
     handle(req, res, parsedUrl);
   });
@@ -140,6 +142,22 @@ app.prepare().then(() => {
           });
         }
       }
+    });
+
+    // ── Courier status change (online/offline/break) ───────────────────
+    socket.on('courier:status:change', async ({ courierId: cid, status }) => {
+      if (socket.courierId !== cid) return;
+      // Broadcast to admin room so dashboard updates instantly
+      io.to('admin:tracking').emit('courier:status:update', { courierId: cid, status });
+      // If going offline, remove from in-memory location cache
+      if (status === 'offline') {
+        courierLocations.delete(cid);
+      }
+      // Persist status to DB
+      supabase.from('couriers')
+        .update({ status, last_seen: new Date().toISOString() })
+        .eq('id', cid)
+        .then();
     });
 
     // ── New job notify ─────────────────────────────────────────────────
