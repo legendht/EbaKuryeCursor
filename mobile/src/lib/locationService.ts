@@ -19,7 +19,8 @@ export async function startLocationTracking(cid: string) {
 
   if (!socket) {
     socket = io(process.env.EXPO_PUBLIC_SOCKET_URL!, {
-      transports: ['websocket'],
+      path: '/socket.io/',
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 2000,
     });
