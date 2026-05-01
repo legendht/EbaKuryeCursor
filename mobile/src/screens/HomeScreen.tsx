@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  Alert, ActivityIndicator, Switch, Linking, RefreshControl,
+  Alert, ActivityIndicator, Linking, RefreshControl,
   Modal, TextInput, ScrollView, Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -15,6 +15,8 @@ const C = {
   green: '#22c55e', red: '#ef4444', yellow: '#eab308',
 };
 
+type CourierStatus = 'online' | 'offline' | 'break';
+
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Beklemede', confirmed: 'Onaylandı', assigning: 'Kurye Aranıyor',
   assigned: 'Atandı', pickup: 'Paket Alındı', in_transit: 'Yolda',
@@ -26,14 +28,34 @@ const REJECT_REASONS = [
   'Hastayım', 'Yakıt yok', 'Yolda başka iş var', 'Diğer',
 ];
 
-interface Props { courierId: string; onLogout: () => void; }
+const BREAK_REASONS = ['Yemek', 'İbadet', 'Motor Arızası', 'Dinlenme', 'Diğer'];
 
-export default function HomeScreen({ courierId, onLogout }: Props) {
-  const [isOnline, setIsOnline] = useState(false);
+const STATUS_DISPLAY: Record<CourierStatus, { label: string; color: string; dot: string; emoji: string }> = {
+  online:  { label: 'Online',  color: C.green,  dot: C.green,  emoji: '🟢' },
+  offline: { label: 'Offline', color: C.muted,  dot: C.muted,  emoji: '⚫' },
+  break:   { label: 'Mola',    color: C.yellow, dot: C.yellow, emoji: '🟡' },
+};
+
+interface Props {
+  courierId: string;
+  onLogout: () => void;
+  onProfile: () => void;
+}
+
+export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
+  const [courierStatus, setCourierStatus] = useState<CourierStatus>('offline');
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [profile, setProfile] = useState<{ full_name: string } | null>(null);
+  const [profile, setProfile] = useState<{ full_name: string; profile_photo_url?: string } | null>(null);
+
+  // Status dropdown modal
+  const [statusModal, setStatusModal] = useState(false);
+
+  // Break reason modal
+  const [breakModal, setBreakModal] = useState(false);
+  const [breakReason, setBreakReason] = useState('');
+  const [customBreak, setCustomBreak] = useState('');
 
   // New job alert
   const [newJob, setNewJob] = useState<Order | null>(null);
@@ -64,6 +86,16 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
   useEffect(() => {
     supabase.from('profiles').select('full_name').eq('id', courierId).single()
       .then(({ data }) => setProfile(data));
+    // Load courier profile photo
+    supabase.from('couriers').select('profile_photo_url, status').eq('id', courierId).single()
+      .then(({ data }) => {
+        if (data) {
+          setProfile((prev) => prev ? { ...prev, profile_photo_url: data.profile_photo_url } : prev);
+          if (data.status === 'online' || data.status === 'offline' || data.status === 'break') {
+            setCourierStatus(data.status as CourierStatus);
+          }
+        }
+      });
     fetchOrders().finally(() => setLoading(false));
 
     const socket = getSocket();
@@ -83,26 +115,58 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
     return () => { socket?.off('courier:new:job'); };
   }, [courierId, fetchOrders]);
 
-  const toggleOnline = async (val: boolean) => {
-    setIsOnline(val);
-    if (val) {
-      try {
+  // ── Status Change Logic ──
+  const applyStatus = async (newStatus: CourierStatus, reason?: string) => {
+    const prev = courierStatus;
+    setCourierStatus(newStatus);
+    try {
+      if (newStatus === 'online') {
         await startLocationTracking(courierId);
-        await supabase.from('couriers').update({ status: 'online' }).eq('id', courierId);
-      } catch (err: unknown) {
-        Alert.alert('Hata', err instanceof Error ? err.message : 'Konum başlatılamadı');
-        setIsOnline(false);
+        await supabase.from('couriers').update({ status: 'online', break_reason: null }).eq('id', courierId);
+      } else if (newStatus === 'break') {
+        stopLocationTracking();
+        await supabase.from('couriers').update({ status: 'break', break_reason: reason || null }).eq('id', courierId);
+      } else {
+        stopLocationTracking();
+        await supabase.from('couriers').update({ status: 'offline', break_reason: null }).eq('id', courierId);
       }
-    } else {
-      stopLocationTracking();
-      await supabase.from('couriers').update({ status: 'offline' }).eq('id', courierId);
+    } catch (err: unknown) {
+      setCourierStatus(prev);
+      Alert.alert('Hata', err instanceof Error ? err.message : 'Durum değiştirilemedi');
     }
   };
 
+  const handleStatusSelect = async (newStatus: CourierStatus) => {
+    setStatusModal(false);
+    if (newStatus === 'break') {
+      setBreakReason('');
+      setCustomBreak('');
+      setBreakModal(true);
+    } else {
+      await applyStatus(newStatus);
+    }
+  };
+
+  const confirmBreak = async () => {
+    const reason = breakReason === 'Diğer' ? customBreak : breakReason;
+    if (!reason.trim()) { Alert.alert('Uyarı', 'Mola sebebi seçiniz.'); return; }
+    setBreakModal(false);
+    await applyStatus('break', reason);
+  };
+
   const handleLogout = async () => {
-    stopLocationTracking();
-    await supabase.auth.signOut();
-    onLogout();
+    Alert.alert('Çıkış', 'Uygulamadan çıkmak istiyor musunuz?', [
+      { text: 'İptal', style: 'cancel' },
+      {
+        text: 'Çıkış Yap', style: 'destructive',
+        onPress: async () => {
+          stopLocationTracking();
+          await supabase.from('couriers').update({ status: 'offline' }).eq('id', courierId);
+          await supabase.auth.signOut();
+          onLogout();
+        },
+      },
+    ]);
   };
 
   const openNavigation = (lat: number, lng: number) => {
@@ -114,14 +178,12 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
     setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, status: status as Order['status'] } : o));
   };
 
-  // Accept new job
   const acceptJob = async (order: Order) => {
     setNewJob(null);
     await updateStatus(order.id, 'assigned');
     fetchOrders();
   };
 
-  // Reject new job via SQL function
   const openRejectModal = (order: Order) => {
     setRejectOrder(order);
     setRejectReason('');
@@ -148,7 +210,6 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
     }
   };
 
-  // Take photo and upload
   const takePhoto = async () => {
     if (!cameraRef.current || !cameraModal) return;
     const photo = await cameraRef.current.takePictureAsync({ quality: 0.6, base64: false });
@@ -161,22 +222,19 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
       const formData = new FormData();
       formData.append('file', { uri: photoUri, type: 'image/jpeg', name: 'photo.jpg' } as never);
       formData.append('phase', cameraModal.phase);
-
-      const res = await fetch(`${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/api/upload`, {
-        method: 'POST',
-        body: formData,
-      });
+      const res = await fetch(
+        `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/api/upload`,
+        { method: 'POST', body: formData }
+      );
       const { url } = await res.json();
-
       const field = cameraModal.phase === 'pickup' ? 'pickup_photo_url' : 'delivery_photo_url';
       await supabase.from('orders').update({ [field]: url }).eq('id', cameraModal.orderId);
-
       const nextStatus = cameraModal.phase === 'pickup' ? 'pickup' : 'delivered';
       await updateStatus(cameraModal.orderId, nextStatus);
-
       setPhotoUri(null);
       setCameraModal(null);
       Alert.alert('✅', cameraModal.phase === 'pickup' ? 'Paket teslim alındı!' : 'Teslimat tamamlandı!');
+      fetchOrders();
     } catch {
       Alert.alert('Hata', 'Fotoğraf yüklenemedi');
     }
@@ -190,6 +248,8 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
     setPhotoUri(null);
     setCameraModal({ orderId, phase });
   };
+
+  const sd = STATUS_DISPLAY[courierStatus];
 
   const renderOrder = ({ item }: { item: Order }) => (
     <View style={styles.orderCard}>
@@ -207,7 +267,7 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
         <Text style={styles.addrText} numberOfLines={1}>{item.pickup_address}</Text>
       </View>
       <View style={styles.addressRow}>
-        <Text style={styles.addrLabel}>🏁 Teslimat</Text>
+        <Text style={styles.addrLabel}>🏁 Teslim</Text>
         <Text style={styles.addrText} numberOfLines={1}>{item.dropoff_address}</Text>
       </View>
 
@@ -256,22 +316,38 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>Merhaba, {profile?.full_name?.split(' ')[0]} 👋</Text>
-          <View style={styles.statusRow}>
-            <View style={[styles.dot, { backgroundColor: isOnline ? C.green : C.muted }]} />
-            <Text style={[styles.statusLabel, { color: isOnline ? C.green : C.muted }]}>
-              {isOnline ? 'Online' : 'Offline'}
-            </Text>
+        <View style={styles.headerLeft}>
+          {/* Avatar */}
+          <TouchableOpacity onPress={onProfile} style={styles.avatar}>
+            {profile?.profile_photo_url
+              ? <Image source={{ uri: profile.profile_photo_url }} style={styles.avatarImg} />
+              : <Text style={styles.avatarEmoji}>👤</Text>
+            }
+          </TouchableOpacity>
+          <View>
+            <Text style={styles.greeting}>{profile?.full_name?.split(' ')[0] ?? 'Kurye'} 👋</Text>
+            <View style={styles.statusIndicator}>
+              <View style={[styles.dot, { backgroundColor: sd.dot }]} />
+              <Text style={[styles.statusLabel, { color: sd.color }]}>{sd.label}</Text>
+            </View>
           </View>
         </View>
+
         <View style={styles.headerRight}>
-          <Switch value={isOnline} onValueChange={toggleOnline}
-            trackColor={{ false: C.border, true: C.orange }} thumbColor={isOnline ? '#fff' : '#94a3b8'} />
-          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
-            <Text style={styles.logoutText}>Çıkış</Text>
+          {/* Status dropdown button */}
+          <TouchableOpacity style={styles.statusBtn} onPress={() => setStatusModal(true)}>
+            <Text style={styles.statusBtnText}>{sd.emoji} {sd.label}</Text>
+            <Text style={{ color: C.muted, fontSize: 12 }}>▼</Text>
+          </TouchableOpacity>
+
+          {/* Profile & Logout */}
+          <TouchableOpacity onPress={onProfile} style={styles.iconBtn}>
+            <Text style={{ fontSize: 20 }}>⚙️</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleLogout} style={styles.iconBtn}>
+            <Text style={{ fontSize: 20 }}>🚪</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -285,20 +361,96 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
             renderItem={renderOrder}
             contentContainerStyle={styles.listContent}
             refreshControl={
-              <RefreshControl refreshing={refreshing}
+              <RefreshControl
+                refreshing={refreshing}
                 onRefresh={async () => { setRefreshing(true); await fetchOrders(); setRefreshing(false); }}
-                tintColor={C.orange} />
+                tintColor={C.orange}
+              />
             }
             ListEmptyComponent={
               <View style={styles.empty}>
-                <Text style={styles.emptyEmoji}>📭</Text>
+                <Text style={styles.emptyEmoji}>
+                  {courierStatus === 'online' ? '📭' : courierStatus === 'break' ? '☕' : '📵'}
+                </Text>
                 <Text style={styles.emptyText}>
-                  {isOnline ? 'Sipariş bekleniyor...' : 'Online olun ve siparişleri görün'}
+                  {courierStatus === 'online'
+                    ? 'Sipariş bekleniyor...'
+                    : courierStatus === 'break'
+                    ? 'Molada – İyi dinlenmeler!'
+                    : 'Online olun ve siparişleri görün'}
                 </Text>
               </View>
             }
           />
         )}
+
+      {/* ── Status Selection Modal ── */}
+      <Modal visible={statusModal} transparent animationType="slide">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setStatusModal(false)} activeOpacity={1}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Durum Seçin</Text>
+            {((['online', 'break', 'offline'] as CourierStatus[]).map((s) => {
+              const d = STATUS_DISPLAY[s];
+              return (
+                <TouchableOpacity
+                  key={s}
+                  style={[styles.statusOption, courierStatus === s && styles.statusOptionActive]}
+                  onPress={() => handleStatusSelect(s)}
+                >
+                  <Text style={styles.statusOptionEmoji}>{d.emoji}</Text>
+                  <View>
+                    <Text style={[styles.statusOptionLabel, { color: d.color }]}>{d.label}</Text>
+                    <Text style={styles.statusOptionDesc}>
+                      {s === 'online' ? 'Konum paylaşımı başlar' : s === 'break' ? 'Mola – sebep sorulur' : 'Konum paylaşımı durur'}
+                    </Text>
+                  </View>
+                  {courierStatus === s && <Text style={{ marginLeft: 'auto', color: C.orange }}>✓</Text>}
+                </TouchableOpacity>
+              );
+            }))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Break Reason Modal ── */}
+      <Modal visible={breakModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>☕ Mola Sebebi</Text>
+            <ScrollView style={{ maxHeight: 260 }}>
+              {BREAK_REASONS.map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.reasonBtn, breakReason === r && styles.reasonSelected]}
+                  onPress={() => setBreakReason(r)}
+                >
+                  <Text style={[styles.reasonText, breakReason === r && { color: C.orange }]}>{r}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            {breakReason === 'Diğer' && (
+              <TextInput
+                style={styles.reasonInput}
+                placeholder="Sebebi yazın..."
+                placeholderTextColor={C.muted}
+                value={customBreak}
+                onChangeText={setCustomBreak}
+                multiline
+              />
+            )}
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#1e4976' }]}
+                onPress={() => setBreakModal(false)}>
+                <Text style={styles.modalBtnText}>İptal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.yellow }]}
+                onPress={confirmBreak}>
+                <Text style={styles.modalBtnText}>Molaya Geç</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── New Job Alert Modal ── */}
       <Modal visible={!!newJob} transparent animationType="slide">
@@ -334,8 +486,11 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
             <Text style={styles.modalTitle}>Red Sebebi</Text>
             <ScrollView style={{ maxHeight: 280 }}>
               {REJECT_REASONS.map((r) => (
-                <TouchableOpacity key={r} style={[styles.reasonBtn, rejectReason === r && styles.reasonSelected]}
-                  onPress={() => setRejectReason(r)}>
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.reasonBtn, rejectReason === r && styles.reasonSelected]}
+                  onPress={() => setRejectReason(r)}
+                >
                   <Text style={[styles.reasonText, rejectReason === r && { color: C.orange }]}>{r}</Text>
                 </TouchableOpacity>
               ))}
@@ -350,8 +505,10 @@ export default function HomeScreen({ courierId, onLogout }: Props) {
                 onPress={() => setRejectOrder(null)}>
                 <Text style={styles.modalBtnText}>Vazgeç</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.red, opacity: rejecting ? 0.6 : 1 }]}
-                onPress={submitReject} disabled={rejecting}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: C.red, opacity: rejecting ? 0.6 : 1 }]}
+                onPress={submitReject} disabled={rejecting}
+              >
                 <Text style={styles.modalBtnText}>{rejecting ? 'Gönderiliyor...' : 'Reddet'}</Text>
               </TouchableOpacity>
             </View>
@@ -401,16 +558,29 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    padding: 20, paddingTop: 60, backgroundColor: C.card,
-    borderBottomWidth: 1, borderBottomColor: C.border,
+    paddingHorizontal: 16, paddingTop: 52, paddingBottom: 14,
+    backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  greeting: { color: C.text, fontSize: 18, fontWeight: 'bold' },
-  statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 6 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  avatar: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: '#1e4976', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: C.orange,
+  },
+  avatarImg: { width: 40, height: 40, borderRadius: 20 },
+  avatarEmoji: { fontSize: 22 },
+  greeting: { color: C.text, fontSize: 15, fontWeight: 'bold' },
+  statusIndicator: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  statusLabel: { fontSize: 13, fontWeight: '500' },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  logoutBtn: { padding: 6 },
-  logoutText: { color: C.muted, fontSize: 13 },
+  statusLabel: { fontSize: 12, fontWeight: '500' },
+  statusBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#0a1628', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: C.border,
+  },
+  statusBtnText: { color: C.text, fontSize: 13, fontWeight: '600' },
+  iconBtn: { padding: 6 },
   listContent: { padding: 16, gap: 12 },
   orderCard: { backgroundColor: C.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border },
   orderHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
@@ -420,7 +590,10 @@ const styles = StyleSheet.create({
   addressRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 8 },
   addrLabel: { color: C.muted, fontSize: 12, width: 70 },
   addrText: { color: '#94a3b8', fontSize: 12, flex: 1 },
-  orderFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.border },
+  orderFooter: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.border,
+  },
   price: { color: C.orange, fontWeight: 'bold', fontSize: 16 },
   vehicle: { color: '#94a3b8', fontSize: 12 },
   actionRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
@@ -435,13 +608,21 @@ const styles = StyleSheet.create({
     backgroundColor: C.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     padding: 24, borderWidth: 1, borderColor: C.border,
   },
-  modalTitle: { color: C.text, fontSize: 20, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  modalTitle: { color: C.text, fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' },
   modalTrack: { color: C.orange, fontFamily: 'monospace', fontSize: 14, marginBottom: 8, textAlign: 'center' },
   modalAddr: { color: '#94a3b8', fontSize: 13, marginBottom: 4 },
   modalPrice: { color: C.text, fontWeight: 'bold', fontSize: 18, marginVertical: 12, textAlign: 'center' },
   modalBtns: { flexDirection: 'row', gap: 12, marginTop: 16 },
   modalBtn: { flex: 1, padding: 14, borderRadius: 12, alignItems: 'center' },
   modalBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  statusOption: {
+    flexDirection: 'row', alignItems: 'center', padding: 14,
+    borderRadius: 12, borderWidth: 1, borderColor: C.border, marginBottom: 8, gap: 12,
+  },
+  statusOptionActive: { borderColor: C.orange, backgroundColor: C.orange + '15' },
+  statusOptionEmoji: { fontSize: 24 },
+  statusOptionLabel: { fontSize: 15, fontWeight: '700' },
+  statusOptionDesc: { color: C.muted, fontSize: 12 },
   reasonBtn: { padding: 14, borderRadius: 10, borderWidth: 1, borderColor: C.border, marginBottom: 6 },
   reasonSelected: { borderColor: C.orange, backgroundColor: C.orange + '15' },
   reasonText: { color: C.text, fontSize: 14 },
