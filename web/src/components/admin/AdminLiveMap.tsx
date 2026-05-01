@@ -163,21 +163,26 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
 
   const fetchCourierMeta = useCallback(async () => {
     const supabase = createClient();
-    const { data } = await supabase
+    const { data: couriers, error } = await supabase
       .from('couriers')
-      .select('id, vehicle_type, status, profile:profiles(full_name)')
+      .select('id, vehicle_type, status')
       .in('status', ['online', 'busy', 'break']);
-    if (data) {
-      data.forEach((c) => {
-        courierMetaRef.current.set(c.id, {
-          vehicleType: c.vehicle_type,
-          status: c.status,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          fullName: (c.profile as any)?.full_name ?? 'Kurye',
-        });
+    if (error || !couriers) return null;
+
+    const ids = couriers.map((c) => c.id);
+    const { data: profiles } = ids.length
+      ? await supabase.from('profiles').select('id, full_name').in('id', ids)
+      : { data: [] as { id: string; full_name: string }[] };
+
+    const nameMap = new Map((profiles || []).map((p) => [p.id, p.full_name]));
+    couriers.forEach((c) => {
+      courierMetaRef.current.set(c.id, {
+        vehicleType: c.vehicle_type,
+        status: c.status,
+        fullName: nameMap.get(c.id) ?? 'Kurye',
       });
-    }
-    return data;
+    });
+    return couriers;
   }, []);
 
   const removeMarker = useCallback((courierId: string) => {
