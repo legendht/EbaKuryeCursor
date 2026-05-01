@@ -27,15 +27,13 @@ export default async function AdminOrdersPage() {
     .select('id, vehicle_type, vehicle_plate, status, profile:profiles(full_name)')
     .eq('is_approved', true);
 
-  const couriers = (couriersData || []).map((c: {
-    id: string; vehicle_type: string; vehicle_plate: string; status: string;
-    profile?: { full_name?: string } | null;
-  }) => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const couriers = (couriersData || []).map((c: any) => ({
     id: c.id,
     vehicle_type: c.vehicle_type,
     vehicle_plate: c.vehicle_plate,
     status: c.status,
-    full_name: (c.profile as { full_name?: string } | null)?.full_name || '-',
+    full_name: (Array.isArray(c.profile) ? c.profile[0] : c.profile)?.full_name || '-',
   }));
 
   const rows = (orders || []) as OrderRow[];
