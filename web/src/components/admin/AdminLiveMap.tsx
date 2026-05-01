@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import type { Map as MapboxGlMap, Marker as MapMarker } from 'mapbox-gl';
 import { createClient } from '@/lib/supabase/client';
 import { MAPBOX_TOKEN, ISTANBUL_CENTER } from '@/lib/mapbox';
 import { io, Socket } from 'socket.io-client';
@@ -35,59 +36,89 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<unknown>(null);
-  const markersRef = useRef<Map<string, unknown>>(new Map());
+  const mapRef = useRef<MapboxGlMap | null>(null);
+  const mapboxRef = useRef<typeof import('mapbox-gl').default | null>(null);
+  const markersRef = useRef<Map<string, MapMarker>>(new Map());
   const socketRef = useRef<Socket | null>(null);
   const courierMetaRef = useRef<Map<string, { vehicleType: string; fullName: string; status: string }>>(new Map());
-  const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapLibReady, setMapLibReady] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [courierCount, setCourierCount] = useState(0);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Load Mapbox GL JS
   useEffect(() => {
-    if ((window as Window & { mapboxgl?: unknown }).mapboxgl) { setMapLoaded(true); return; }
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css';
-    document.head.appendChild(link);
+    let cancelled = false;
 
-    const script = document.createElement('script');
-    script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js';
-    script.onload = () => setMapLoaded(true);
-    document.head.appendChild(script);
-  }, []);
-
-  // Initialize map
-  useEffect(() => {
-    if (!mapLoaded || !mapContainer.current || mapRef.current) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mapboxgl = (window as any).mapboxgl;
-    if (!mapboxgl) return;
-
-    mapboxgl.accessToken = MAPBOX_TOKEN;
-    const map = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
-      center: ISTANBUL_CENTER,
-      zoom: mini ? 10 : 11,
-    });
-    mapRef.current = map;
-
-    if (!mini) {
-      map.addControl(new mapboxgl.NavigationControl(), 'top-right');
-      map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+    async function boot() {
+      if (!MAPBOX_TOKEN) {
+        if (!cancelled) setMapError('Mapbox anahtarı tanımlı değil (NEXT_PUBLIC_MAPBOX_TOKEN).');
+        return;
+      }
+      try {
+        await import('mapbox-gl/dist/mapbox-gl.css');
+        const mapboxgl = (await import('mapbox-gl')).default;
+        if (cancelled) return;
+        mapboxRef.current = mapboxgl;
+        setMapLibReady(true);
+      } catch {
+        if (!cancelled) setMapError('Harita kütüphanesi yüklenemedi. Tarayıcı ağı veya CSP engeli olabilir.');
+      }
     }
 
-    return () => { map.remove(); mapRef.current = null; };
-  }, [mapLoaded, mini]);
+    boot();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = mapContainer.current;
+    if (!mapLibReady || !el || mapError || mapRef.current || !mapboxRef.current) return;
+
+    const mapboxgl = mapboxRef.current;
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+
+    try {
+      const map = new mapboxgl.Map({
+        container: el,
+        style: 'mapbox://styles/mapbox/dark-v11',
+        center: ISTANBUL_CENTER,
+        zoom: mini ? 10 : 11,
+      });
+      mapRef.current = map;
+
+      map.on('error', (e) => {
+        const err = e?.error as { message?: string } | undefined;
+        const msg =
+          typeof err?.message === 'string' ? err.message : 'Harita stili veya bağlantı hatası.';
+        setMapError(msg);
+      });
+
+      map.on('load', () => setMapReady(true));
+
+      if (!mini) {
+        map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+        map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+      }
+    } catch (e) {
+      setMapError(e instanceof Error ? e.message : 'Harita oluşturulamadı.');
+    }
+
+    return () => {
+      markersRef.current.forEach((m) => m.remove());
+      markersRef.current.clear();
+      mapRef.current?.remove();
+      mapRef.current = null;
+      setMapReady(false);
+    };
+  }, [mapLibReady, mini, mapError]);
 
   const updateCourierMarker = useCallback((loc: CourierLocation) => {
     const map = mapRef.current;
-    if (!map) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mapboxgl = (window as any).mapboxgl;
-    if (!mapboxgl) return;
+    const mapboxgl = mapboxRef.current;
+    if (!map || !mapboxgl) return;
 
     const meta = courierMetaRef.current.get(loc.courierId);
     const vehicleType = loc.vehicleType || meta?.vehicleType || 'motorcycle';
@@ -98,33 +129,31 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
     const borderColor = STATUS_COLOR[status] ?? '#22c55e';
 
     if (markersRef.current.has(loc.courierId)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const marker = markersRef.current.get(loc.courierId) as any;
+      const marker = markersRef.current.get(loc.courierId)!;
       marker.setLngLat([loc.lng, loc.lat]);
-      const el = marker.getElement();
-      if (el) el.style.borderColor = borderColor;
+      const htmlEl = marker.getElement();
+      if (htmlEl) htmlEl.style.borderColor = borderColor;
     } else {
-      const el = document.createElement('div');
-      el.style.cssText = [
+      const markerEl = document.createElement('div');
+      markerEl.style.cssText = [
         'width:40px', 'height:40px', 'background:#0f2340',
         `border:2.5px solid ${borderColor}`, 'border-radius:50%',
         'display:flex', 'align-items:center', 'justify-content:center',
         'font-size:20px', `box-shadow:0 0 10px ${borderColor}60`,
         'cursor:pointer', 'transition:border-color 0.3s',
       ].join(';');
-      el.innerHTML = emoji;
+      markerEl.innerHTML = emoji;
 
       const popup = new mapboxgl.Popup({ offset: 25, closeButton: false })
         .setHTML(`<div style="color:#0a1628;font-size:12px;font-weight:600">${fullName}<br/>${status}</div>`);
 
-      const marker = new mapboxgl.Marker({ element: el })
+      const marker = new mapboxgl.Marker({ element: markerEl })
         .setLngLat([loc.lng, loc.lat])
         .setPopup(popup)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .addTo(map as any);
+        .addTo(map);
 
-      el.addEventListener('mouseenter', () => marker.togglePopup());
-      el.addEventListener('mouseleave', () => marker.togglePopup());
+      markerEl.addEventListener('mouseenter', () => marker.togglePopup());
+      markerEl.addEventListener('mouseleave', () => marker.togglePopup());
 
       markersRef.current.set(loc.courierId, marker);
     }
@@ -132,7 +161,6 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
     setLastUpdate(new Date());
   }, []);
 
-  // Fetch courier metadata (vehicle type, name, status) from DB
   const fetchCourierMeta = useCallback(async () => {
     const supabase = createClient();
     const { data } = await supabase
@@ -152,19 +180,16 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
     return data;
   }, []);
 
-  // Remove markers for offline couriers
   const removeMarker = useCallback((courierId: string) => {
     if (markersRef.current.has(courierId)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (markersRef.current.get(courierId) as any).remove();
+      markersRef.current.get(courierId)!.remove();
       markersRef.current.delete(courierId);
       setCourierCount(markersRef.current.size);
     }
   }, []);
 
-  // Connect to Socket.io and join admin tracking room
   useEffect(() => {
-    if (!mapLoaded) return;
+    if (!mapReady) return;
 
     const supabase = createClient();
 
@@ -172,7 +197,6 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      // Fetch courier metadata first
       await fetchCourierMeta();
 
       const socketUrl = typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_SOCKET_URL || '');
@@ -189,7 +213,6 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
 
       socket.on('disconnect', () => setConnected(false));
 
-      // Snapshot of all current courier locations on join
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       socket.on('admin:tracking:snapshot', (snapshot: Record<string, any>) => {
         Object.entries(snapshot).forEach(([courierId, loc]) => {
@@ -199,7 +222,6 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
         });
       });
 
-      // Real-time location updates from couriers
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       socket.on('courier:location:update', (data: any) => {
         const { courierId, lat, lng, heading } = data;
@@ -208,7 +230,6 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
         }
       });
 
-      // Courier status change
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       socket.on('courier:status:update', (data: any) => {
         const { courierId, status } = data;
@@ -219,14 +240,10 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
         }
         if (status === 'offline') {
           removeMarker(courierId);
-        } else {
-          // Update marker color
-          if (markersRef.current.has(courierId)) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const marker = markersRef.current.get(courierId) as any;
-            const el = marker.getElement();
-            if (el) el.style.borderColor = STATUS_COLOR[status] ?? '#64748b';
-          }
+        } else if (markersRef.current.has(courierId)) {
+          const marker = markersRef.current.get(courierId)!;
+          const el = marker.getElement();
+          if (el) el.style.borderColor = STATUS_COLOR[status] ?? '#64748b';
         }
       });
     };
@@ -237,20 +254,38 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
-  }, [mapLoaded, updateCourierMarker, removeMarker, fetchCourierMeta]);
+  }, [mapReady, updateCourierMarker, removeMarker, fetchCourierMeta]);
+
+  const loading = mapLibReady && !mapReady && !mapError;
 
   return (
     <div className="relative">
-      <div ref={mapContainer} style={{ height: `${height}px`, width: '100%' }} />
-      {!mapLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0a1628]">
+      <div ref={mapContainer} style={{ height: `${height}px`, width: '100%' }} className={mapError ? 'bg-[#0a1628]' : undefined} />
+
+      {!mapLibReady && !mapError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a1628] z-10">
           <div className="text-center">
             <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
             <p className="text-slate-400 text-sm">Harita yükleniyor...</p>
           </div>
         </div>
       )}
-      {/* Stats overlay */}
+
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a1628]/70 z-[5] pointer-events-none">
+          <div className="text-center pointer-events-auto">
+            <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            <p className="text-slate-400 text-sm">Stil ve karo yükleniyor...</p>
+          </div>
+        </div>
+      )}
+
+      {mapError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a1628] z-10 p-4">
+          <p className="text-red-400 text-sm text-center max-w-md">{mapError}</p>
+        </div>
+      )}
+
       <div className="absolute top-3 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex items-center gap-3">
         <div className="flex items-center gap-1.5">
           <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
@@ -266,7 +301,7 @@ export default function AdminLiveMap({ height = 600, mini = false }: AdminLiveMa
           </span>
         )}
       </div>
-      {/* Legend */}
+
       {!mini && (
         <div className="absolute bottom-6 left-3 bg-[#0f2340]/90 backdrop-blur-sm border border-[#1e4976]/60 rounded-lg px-3 py-2 text-xs text-slate-300 flex flex-col gap-1.5">
           {[
