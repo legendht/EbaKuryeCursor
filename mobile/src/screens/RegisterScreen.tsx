@@ -48,34 +48,32 @@ export default function RegisterScreen({ onBack, onRegistered }: Props) {
 
     setLoading(true);
     try {
-      // Create auth user
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error || !data.user) {
-        Alert.alert('Kayıt Hatası', error?.message || 'Hesap oluşturulamadı.');
-        setLoading(false);
-        return;
-      }
-
-      // Create courier profile
-      const { error: rpcError } = await supabase.rpc('register_courier_self' as never, {
-        p_full_name: fullName.trim(),
-        p_phone: phone.trim(),
-        p_vehicle_type: vehicleType,
-        p_vehicle_plate: plate.trim().toUpperCase(),
-        p_tc_no: tcNo.trim() || null,
+      const appUrl = process.env.EXPO_PUBLIC_APP_URL || 'https://www.ebakurye.com';
+      const res = await fetch(`${appUrl}/api/public/register-courier`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: fullName.trim(),
+          email: email.trim(),
+          password,
+          phone: phone.trim(),
+          vehicle_type: vehicleType,
+          vehicle_plate: plate.trim().toUpperCase(),
+          tc_no: tcNo.trim() || null,
+        }),
       });
 
-      if (rpcError) {
-        Alert.alert('Hata', rpcError.message || 'Profil oluşturulamadı.');
+      const result = await res.json();
+
+      if (!res.ok) {
+        Alert.alert('Kayıt Hatası', result.error || 'Hesap oluşturulamadı.');
         setLoading(false);
         return;
       }
 
-      // Sign out - wait for admin approval
-      await supabase.auth.signOut();
       onRegistered();
     } catch (e) {
-      Alert.alert('Hata', 'Beklenmeyen bir hata oluştu.');
+      Alert.alert('Hata', 'Sunucuya bağlanılamadı. İnternet bağlantınızı kontrol edin.');
     } finally {
       setLoading(false);
     }

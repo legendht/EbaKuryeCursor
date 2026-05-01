@@ -1,28 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
 
 export async function POST(req: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const admin = await createAdminClient();
+    const body = await req.json();
+    const { full_name, email, password, phone, company_name, tax_number, is_b2b, address } = body;
 
-  const body = await req.json();
-  const { full_name, email, password, phone, company_name, tax_number, is_b2b, address } = body;
+    if (!full_name || !email || !password) {
+      return NextResponse.json({ error: 'Zorunlu alanlar eksik' }, { status: 400 });
+    }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data, error } = await (supabase as any).rpc('admin_create_user', {
-    p_email: email,
-    p_password: password,
-    p_full_name: full_name,
-    p_phone: phone || null,
-    p_role: 'customer',
-    p_company_name: company_name || null,
-    p_tax_number: tax_number || null,
-    p_is_b2b: !!is_b2b,
-    p_address: address || null,
-  });
+    // Create auth user
+    const { data: newUser, error: userError } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name },
+    });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (userError || !newUser?.user) {
+      return NextResponse.json({ error: userError?.message || 'Kullanıcı oluşturulamadı' }, { status: 500 });
+    }
 
-  return NextResponse.json({ success: true, userId: data });
+    const userId = newUser.user.id;
+
+    // Profile
+    await admin.from('profiles').upsert({
+      id: userId,
+      full_name: full_name.trim(),
+      phone: phone || null,
+      role: 'customer',
+    });
+
+    // Customer account
+    await admin.from('customer_accounts').upsert({
+      customer_id: userId,
+      company_name: company_name || null,
+      tax_number: tax_number || null,
+      is_b2b: !!is_b2b,
+      balance: 0,
+    });
+
+    return NextResponse.json({ success: true, userId });
+  } catch (err) {
+    console.error('[create-customer]', err);
+    return NextResponse.json({ error: 'Sunucu hatası' }, { status: 500 });
+  }
 }

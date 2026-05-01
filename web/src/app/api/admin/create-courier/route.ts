@@ -1,47 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
 
 export async function POST(req: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const admin = await createAdminClient();
 
-  const body = await req.json();
-  const { full_name, email, password, phone, tc_no, home_address,
-          vehicle_type, vehicle_plate, vehicle_model, license_number } = body;
+    const body = await req.json();
+    const { full_name, email, password, phone, tc_no, home_address,
+            vehicle_type, vehicle_plate, vehicle_model, license_number } = body;
 
-  // SECURITY DEFINER fonksiyonu — service role gerekmez
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data, error } = await (supabase as any).rpc('admin_create_user', {
-    p_email: email,
-    p_password: password,
-    p_full_name: full_name,
-    p_phone: phone || null,
-    p_role: 'courier',
-    p_tc_no: tc_no || null,
-    p_home_address: home_address || null,
-    p_vehicle_type: vehicle_type || 'motorcycle',
-    p_vehicle_plate: vehicle_plate || null,
-    p_vehicle_model: vehicle_model || null,
-    p_license_number: license_number || null,
-  });
+    if (!full_name || !email || !password) {
+      return NextResponse.json({ error: 'Ad, e-posta ve şifre zorunludur' }, { status: 400 });
+    }
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    // Create auth user via admin API (no confirmation email)
+    const { data: newUser, error: userError } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name },
+    });
 
-  const userId = data as string;
+    if (userError || !newUser?.user) {
+      return NextResponse.json({ error: userError?.message || 'Kullanıcı oluşturulamadı' }, { status: 500 });
+    }
 
-  // Couriers tablosuna kayıt (SECURITY DEFINER)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { error: courierErr } = await (supabase as any).rpc('admin_add_courier', {
-    p_user_id: userId,
-    p_vehicle_type: vehicle_type || 'motorcycle',
-    p_vehicle_plate: vehicle_plate || null,
-    p_vehicle_model: vehicle_model || null,
-    p_tc_no: tc_no || null,
-    p_home_address: home_address || null,
-    p_license_number: license_number || null,
-  });
-  if (courierErr) console.error('Courier insert:', courierErr.message);
+    const userId = newUser.user.id;
 
-  return NextResponse.json({ success: true, courierId: userId });
+    // Profile kaydı
+    const { error: profileErr } = await admin.from('profiles').upsert({
+      id: userId,
+      full_name: full_name.trim(),
+      phone: phone || null,
+      role: 'courier',
+    });
+    if (profileErr) console.error('Profile upsert:', profileErr.message);
+
+    // Courier kaydı
+    const { error: courierErr } = await admin.from('couriers').upsert({
+      id: userId,
+      vehicle_type: (vehicle_type || 'motorcycle') as 'motorcycle' | 'car' | 'van',
+      vehicle_plate: vehicle_plate || null,
+      vehicle_model: vehicle_model || null,
+      tc_no: tc_no || null,
+      home_address: home_address || null,
+      license_number: license_number || null,
+      is_approved: true,
+      status: 'offline',
+    });
+    if (courierErr) console.error('Courier upsert:', courierErr.message);
+
+    return NextResponse.json({ success: true, courierId: userId });
+  } catch (err) {
+    console.error('[create-courier]', err);
+    return NextResponse.json({ error: 'Sunucu hatası' }, { status: 500 });
+  }
 }
