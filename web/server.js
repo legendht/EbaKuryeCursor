@@ -19,7 +19,7 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 );
 
-const app = next({ dev, hostname: 'localhost', port });
+const app = next({ dev });
 const handle = app.getRequestHandler();
 
 // In-memory courier state
@@ -27,12 +27,13 @@ const courierLocations = new Map(); // courierId -> { lat, lng, heading, speed, 
 const courierSockets   = new Map(); // courierId -> socketId
 
 app.prepare().then(() => {
-  const httpServer = createServer((req, res) => {
-    // Socket.io polling requests are handled by the Socket.io engine, not Next.js
-    if (req.url && req.url.startsWith('/socket.io/')) return;
-    const parsedUrl = parse(req.url, true);
-    handle(req, res, parsedUrl);
-  });
+  /**
+   * Dinleyici sırası kritik:
+   * 1) createServer() — callback YOK (aksi halde Next ilk çalışır, Engine.io sonra gelir → çift yanıt / kopuk sayfa)
+   * 2) new Server(httpServer) — Engine.io ilk request listener'ı ekler
+   * 3) httpServer.on('request', …) — Next.js; /socket.io için dokunmaz (Engine zaten yanıtladı)
+   */
+  const httpServer = createServer();
 
   const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -174,7 +175,13 @@ app.prepare().then(() => {
     });
   });
 
-  httpServer.listen(port, () => {
-    console.log(`[EBA Kurye] Server ready on http://localhost:${port}`);
+  httpServer.on('request', (req, res) => {
+    if (req.url && req.url.startsWith('/socket.io/')) return;
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  });
+
+  httpServer.listen(port, '0.0.0.0', () => {
+    console.log(`[EBA Kurye] Server ready on port ${port}`);
   });
 });

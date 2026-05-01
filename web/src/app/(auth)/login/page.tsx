@@ -28,8 +28,16 @@ export default function LoginPage() {
       return;
     }
     toast.success('Giriş yapıldı!');
-    // Role göre yönlendir
-    const { data: role } = await supabase.rpc('get_my_role' as never);
+    const { data: { user } } = await supabase.auth.getUser();
+    let role: string | null = null;
+    if (user) {
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle();
+      role = profile?.role ?? null;
+      if (!role) {
+        const { data: r } = await supabase.rpc('get_my_role' as never);
+        role = (r as string | null) ?? null;
+      }
+    }
     router.push(role === 'admin' ? '/admin' : '/dashboard');
     router.refresh();
   };

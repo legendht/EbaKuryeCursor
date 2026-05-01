@@ -6,7 +6,12 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     serverActions: {
-      allowedOrigins: ['localhost:3000', '76.13.141.249:3000', 'www.ebakurye.com'],
+      allowedOrigins: [
+        'localhost:3000',
+        '76.13.141.249:3000',
+        'ebakurye.com',
+        'www.ebakurye.com',
+      ],
     },
   },
   devIndicators: false,
