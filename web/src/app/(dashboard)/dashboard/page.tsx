@@ -5,7 +5,7 @@ import LogoutButton from '@/components/layout/LogoutButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Plus, Package, TrendingUp, Clock, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { Plus, Package, TrendingUp, Clock, CheckCircle2, ShieldCheck, Wallet } from 'lucide-react';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, formatPrice } from '@/lib/pricing';
 import type { Order, Profile, CustomerAccount } from '@/types/database';
 
