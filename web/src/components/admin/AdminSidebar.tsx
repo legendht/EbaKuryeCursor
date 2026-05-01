@@ -4,13 +4,15 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, MapPin, Package, Users, Truck,
-  Settings, DollarSign, LogOut, Package2
+  Settings, DollarSign, LogOut, Package2, Bell
 } from 'lucide-react';
+import AdminAlertBadge from '@/components/admin/AdminAlertBadge';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
 const NAV_ITEMS = [
   { href: '/admin', icon: <LayoutDashboard className="w-5 h-5" />, label: 'Dashboard' },
+  { href: '/admin/alerts', icon: <Bell className="w-5 h-5" />, label: 'Uyarılar', badge: true },
   { href: '/admin/map', icon: <MapPin className="w-5 h-5" />, label: 'Canlı Harita' },
   { href: '/admin/orders', icon: <Package className="w-5 h-5" />, label: 'Siparişler' },
   { href: '/admin/couriers', icon: <Truck className="w-5 h-5" />, label: 'Kuryeler' },
@@ -58,7 +60,8 @@ export default function AdminSidebar() {
                 }`}
             >
               {item.icon}
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.badge && <AdminAlertBadge />}
             </Link>
           );
         })}

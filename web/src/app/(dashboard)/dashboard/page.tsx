@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import Navbar from '@/components/layout/Navbar';
+import LogoutButton from '@/components/layout/LogoutButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Plus, Package, TrendingUp, Clock, CheckCircle2, Wallet } from 'lucide-react';
+import { Plus, Package, TrendingUp, Clock, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, formatPrice } from '@/lib/pricing';
 import type { Order, Profile, CustomerAccount } from '@/types/database';
 
@@ -38,14 +39,24 @@ export default async function DashboardPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">Merhaba, {profile?.full_name?.split(' ')[0]} 👋</h1>
+            <h1 className="text-2xl font-bold text-white">Merhaba, {profile?.full_name?.split(' ')[0] || 'Kullanıcı'} 👋</h1>
             <p className="text-slate-400 text-sm mt-1">Siparişlerinizi takip edin ve yönetin</p>
           </div>
-          <Link href="/new-order">
-            <Button className="bg-orange-500 hover:bg-orange-600 text-white font-semibold btn-orange-glow">
-              <Plus className="w-4 h-4 mr-2" /> Yeni Sipariş
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2 flex-wrap">
+            {profile?.role === 'admin' && (
+              <Link href="/admin">
+                <Button variant="outline" size="sm" className="border-orange-500/50 text-orange-400 hover:bg-orange-500/10 gap-1">
+                  <ShieldCheck className="w-4 h-4" /> Admin Paneli
+                </Button>
+              </Link>
+            )}
+            <Link href="/new-order">
+              <Button className="bg-orange-500 hover:bg-orange-600 text-white font-semibold btn-orange-glow">
+                <Plus className="w-4 h-4 mr-2" /> Yeni Sipariş
+              </Button>
+            </Link>
+            <LogoutButton />
+          </div>
         </div>
 
         {/* Stats */}

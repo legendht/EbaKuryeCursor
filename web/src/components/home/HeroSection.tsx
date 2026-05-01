@@ -5,7 +5,7 @@ import { ArrowRight, MapPin, Clock, Shield, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PriceCalculator from './PriceCalculator';
 
-export default function HeroSection() {
+export default function HeroSection({ whatsapp = '905XXXXXXXXX' }: { whatsapp?: string }) {
   return (
     <section className="relative min-h-screen hero-gradient pt-16 overflow-hidden">
       {/* Decorative circles */}
@@ -84,7 +84,7 @@ export default function HeroSection() {
 
           {/* Right - Price Calculator */}
           <div>
-            <PriceCalculator />
+            <PriceCalculator whatsapp={whatsapp} />
           </div>
         </div>
       </div>

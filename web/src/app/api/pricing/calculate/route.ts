@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getRouteDistance } from '@/lib/mapbox';
+import { getRouteDistance, haversineDistance } from '@/lib/mapbox';
 import { getVehicleForWeight, calculatePrice } from '@/lib/pricing';
 
 export async function POST(req: NextRequest) {
@@ -26,10 +26,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No vehicle available for this weight' }, { status: 400 });
     }
 
-    const distanceKm = await getRouteDistance(
-      [pickupLng, pickupLat],
-      [dropoffLng, dropoffLat]
-    );
+    let distanceKm: number;
+    try {
+      distanceKm = await getRouteDistance([pickupLng, pickupLat], [dropoffLng, dropoffLat]);
+    } catch {
+      distanceKm = haversineDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
+    }
 
     const totalPrice = calculatePrice(distanceKm, config as any);
 

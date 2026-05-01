@@ -1,38 +1,63 @@
 import { createClient } from '@/lib/supabase/server';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 import Navbar from '@/components/layout/Navbar';
 import HeroSection from '@/components/home/HeroSection';
 import WhatsAppButton from '@/components/layout/WhatsAppButton';
-import { Shield, Zap, MapPin, Clock, Star, Phone, Mail, ChevronRight } from 'lucide-react';
+import TestimonialsSection from '@/components/home/TestimonialsSection';
+import AboutSection from '@/components/home/AboutSection';
+import { Shield, Zap, MapPin, Clock, Phone, Mail, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 
 async function getSettings() {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('site_settings')
-    .select('key, value')
-    .in('key', ['whatsapp_number']);
-  return data?.reduce<Record<string, string>>((acc, s) => ({ ...acc, [s.key]: s.value }), {}) || {};
+  try {
+    const supabase = await createClient();
+    const { data } = await supabase.from('site_settings').select('key, value');
+    return data?.reduce<Record<string, string>>((acc, s) => ({ ...acc, [s.key]: s.value }), {}) || {};
+  } catch {
+    return {};
+  }
+}
+
+async function getPricing() {
+  try {
+    const supabase = await createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data } = await (supabase as any).from('pricing_config').select('*').order('min_weight_kg');
+    return (data || []) as { id: string; vehicle_type: string; base_fare: number; per_km_rate: number; min_weight_kg: number; max_weight_kg: number }[];
+  } catch {
+    return [];
+  }
 }
 
 async function getProfile() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-  const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-  return data;
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+    const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 export default async function HomePage() {
-  const [settings, profile] = await Promise.all([getSettings(), getProfile()]);
+  const [settings, profile, pricingData] = await Promise.all([getSettings(), getProfile(), getPricing()]);
   const whatsapp = settings.whatsapp_number || '905XXXXXXXXX';
+  const address = settings.company_address || 'Kartal Sanayi, İstanbul';
+  const hours = settings.working_hours || '07:00 - 23:00';
 
   return (
     <main className="min-h-screen">
-      <Navbar profile={profile} />
-      <HeroSection />
+      <Navbar profile={profile as Parameters<typeof Navbar>[0]['profile']} />
 
-      {/* Services Section */}
+      {/* Hero + Price Calculator */}
+      <HeroSection whatsapp={whatsapp} />
+
+      {/* Services */}
       <section id="services" className="py-24 bg-[#0a1628]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
@@ -44,36 +69,27 @@ export default async function HomePage() {
           <div className="grid md:grid-cols-3 gap-8">
             {[
               {
-                icon: '🏍️',
-                title: 'Moto Kurye',
-                subtitle: 'Evrak & Küçük Kargo',
+                icon: '🏍️', title: 'Moto Kurye', subtitle: 'Evrak & Küçük Kargo',
                 desc: 'Trafiği aşan hız. Evrak, küçük paket ve acil teslimatlar için ideal. 0-10 kg.',
-                color: 'from-orange-500/20 to-orange-500/5',
-                border: 'border-orange-500/30',
+                color: 'from-orange-500/20 to-orange-500/5', border: 'border-orange-500/30',
                 price: '30₺\'den başlayan fiyatlarla',
               },
               {
-                icon: '🚗',
-                title: 'Otomobil Kurye',
-                subtitle: 'Orta Boy Kargo',
-                desc: 'Orta hacimli kutular, dayanıklı ürünler ve dikkatli taşıma gerektiren karolar. 10-75 kg.',
-                color: 'from-blue-500/20 to-blue-500/5',
-                border: 'border-blue-500/30',
+                icon: '🚗', title: 'Otomobil Kurye', subtitle: 'Orta Boy Kargo',
+                desc: 'Orta hacimli kutular, dayanıklı ürünler ve dikkatli taşıma gerektiren kargolar. 10-75 kg.',
+                color: 'from-blue-500/20 to-blue-500/5', border: 'border-blue-500/30',
                 price: '50₺\'den başlayan fiyatlarla',
               },
               {
-                icon: '🚐',
-                title: 'Kamyonet',
-                subtitle: 'Büyük Hacimli Yük',
+                icon: '🚐', title: 'Kamyonet', subtitle: 'Büyük Hacimli Yük',
                 desc: 'Mobilya, beyaz eşya, büyük kargo ve kurumsal lojistik ihtiyaçları. 75 kg üzeri.',
-                color: 'from-purple-500/20 to-purple-500/5',
-                border: 'border-purple-500/30',
+                color: 'from-purple-500/20 to-purple-500/5', border: 'border-purple-500/30',
                 price: '80₺\'den başlayan fiyatlarla',
               },
             ].map((service) => (
               <div
                 key={service.title}
-                className={`relative glass-card rounded-2xl p-8 border ${service.border} overflow-hidden group hover:-translate-y-1 transition-transform duration-300`}
+                className={`relative glass-card rounded-2xl p-8 border ${service.border} overflow-hidden hover:-translate-y-1 transition-transform duration-300`}
               >
                 <div className={`absolute inset-0 bg-gradient-to-br ${service.color} opacity-50`} />
                 <div className="relative">
@@ -90,9 +106,9 @@ export default async function HomePage() {
       </section>
 
       {/* Why Us */}
-      <section className="py-24 bg-[#0f2340]">
+      <section className="py-20 bg-[#0f2340]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-16">
+          <div className="text-center mb-14">
             <h2 className="text-4xl font-bold text-white mb-4">Neden EBA Kurye?</h2>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -112,49 +128,60 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* Pricing Section */}
+      {/* Pricing */}
       <section id="pricing" className="py-24 bg-[#0a1628]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold text-white mb-4">Şeffaf Fiyatlandırma</h2>
             <p className="text-slate-400">Gizli ücret yok. Hesap yap, karar ver.</p>
           </div>
-          <div className="grid md:grid-cols-3 gap-8">
-            {[
-              { type: '🏍️ Motosiklet', base: '30₺', per_km: '5₺/km', range: '0 – 10 kg', highlight: false },
-              { type: '🚗 Otomobil', base: '50₺', per_km: '8₺/km', range: '10 – 75 kg', highlight: true },
-              { type: '🚐 Kamyonet', base: '80₺', per_km: '12₺/km', range: '75 kg +', highlight: false },
-            ].map((p) => (
+          <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
+            {(pricingData.length > 0 ? pricingData : [
+              { id: '1', vehicle_type: 'motorcycle', base_fare: 30, per_km_rate: 5,  min_weight_kg: 0,  max_weight_kg: 10  },
+              { id: '2', vehicle_type: 'car',        base_fare: 50, per_km_rate: 8,  min_weight_kg: 10, max_weight_kg: 75  },
+              { id: '3', vehicle_type: 'van',        base_fare: 80, per_km_rate: 12, min_weight_kg: 75, max_weight_kg: 9999 },
+            ]).map((p, i) => {
+              const icons: Record<string, string> = { motorcycle: '🏍️', car: '🚗', van: '🚐' };
+              const names: Record<string, string> = { motorcycle: 'Motosiklet', car: 'Otomobil', van: 'Kamyonet' };
+              const highlight = i === 1;
+              const range = p.max_weight_kg >= 999
+                ? `${p.min_weight_kg} kg +`
+                : `${p.min_weight_kg} – ${p.max_weight_kg} kg`;
+              return (
               <div
-                key={p.type}
-                className={`rounded-2xl p-8 ${p.highlight
+                key={p.id}
+                className={`rounded-2xl p-8 ${highlight
                   ? 'bg-orange-500 shadow-2xl shadow-orange-500/20 scale-105'
-                  : 'glass-card border border-[#1e4976]/40'
-                  }`}
+                  : 'glass-card border border-[#1e4976]/40'}`}
               >
-                <p className={`text-lg font-bold mb-4 ${p.highlight ? 'text-white' : 'text-white'}`}>{p.type}</p>
-                <div className={`text-4xl font-bold mb-1 ${p.highlight ? 'text-white' : 'text-orange-500'}`}>{p.base}</div>
-                <p className={`text-sm mb-1 ${p.highlight ? 'text-orange-100' : 'text-slate-400'}`}>Açılış Ücreti</p>
-                <p className={`text-2xl font-semibold mt-4 mb-1 ${p.highlight ? 'text-white' : 'text-white'}`}>{p.per_km}</p>
-                <p className={`text-sm mb-4 ${p.highlight ? 'text-orange-100' : 'text-slate-400'}`}>Kilometre Ücreti</p>
-                <div className={`text-xs px-3 py-1 rounded-full inline-block ${p.highlight ? 'bg-white/20 text-white' : 'bg-[#1e4976]/40 text-slate-300'}`}>
-                  {p.range}
+                <p className="text-lg font-bold mb-4 text-white">{icons[p.vehicle_type]} {names[p.vehicle_type]}</p>
+                <div className={`text-4xl font-bold mb-1 ${highlight ? 'text-white' : 'text-orange-500'}`}>{p.base_fare}₺</div>
+                <p className={`text-sm mb-1 ${highlight ? 'text-orange-100' : 'text-slate-400'}`}>Açılış Ücreti</p>
+                <p className="text-2xl font-semibold mt-4 mb-1 text-white">{p.per_km_rate}₺/km</p>
+                <p className={`text-sm mb-4 ${highlight ? 'text-orange-100' : 'text-slate-400'}`}>Kilometre Ücreti</p>
+                <div className={`text-xs px-3 py-1 rounded-full inline-block ${highlight ? 'bg-white/20 text-white' : 'bg-[#1e4976]/40 text-slate-300'}`}>
+                  {range}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           <p className="text-center text-slate-500 text-sm mt-8">
-            * Fiyatlar Mapbox canlı trafik verisiyle hesaplanır. Admin panelinden dinamik olarak güncellenebilir.
+            * Fiyatlar Mapbox canlı trafik verisiyle hesaplanır. Admin panelinden güncellenir.
           </p>
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="py-24 bg-[#0f2340]">
+      {/* Testimonials */}
+      <TestimonialsSection />
+
+      {/* About */}
+      <AboutSection />
+
+      {/* CTA */}
+      <section className="py-24 bg-[#0a1628]">
         <div className="max-w-4xl mx-auto px-4 text-center">
-          <h2 className="text-4xl font-bold text-white mb-6">
-            Hemen Başlayın
-          </h2>
+          <h2 className="text-4xl font-bold text-white mb-6">Hemen Başlayın</h2>
           <p className="text-slate-400 mb-10 text-lg">
             Ücretsiz üyelikle tüm avantajlardan yararlanın. Cari hesap, fatura ve daha fazlası.
           </p>
@@ -165,9 +192,8 @@ export default async function HomePage() {
               </Button>
             </Link>
             <a
-              href={`https://wa.me/${whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent('Merhaba, bilgi almak istiyorum.')}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={`https://wa.me/${whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent('Merhaba, kurye hizmetiniz hakkında bilgi almak istiyorum.')}`}
+              target="_blank" rel="noopener noreferrer"
             >
               <Button size="lg" variant="outline" className="border-[#1e4976] text-slate-300 hover:border-green-500 hover:text-green-400 px-10">
                 <span className="mr-2">💬</span> WhatsApp ile İletişim
@@ -178,13 +204,13 @@ export default async function HomePage() {
       </section>
 
       {/* Contact */}
-      <section id="contact" className="py-16 bg-[#0a1628] border-t border-[#1e4976]/30">
+      <section id="contact" className="py-16 bg-[#0f2340] border-t border-[#1e4976]/30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid md:grid-cols-3 gap-8 text-center">
             {[
-              { icon: <Phone className="w-6 h-6 text-orange-500 mx-auto" />, title: 'Telefon', value: whatsapp },
+              { icon: <Phone className="w-6 h-6 text-orange-500 mx-auto" />, title: 'Telefon / WhatsApp', value: whatsapp },
               { icon: <Mail className="w-6 h-6 text-orange-500 mx-auto" />, title: 'E-posta', value: 'info@ebakurye.com' },
-              { icon: <MapPin className="w-6 h-6 text-orange-500 mx-auto" />, title: 'Adres', value: 'İstanbul, Türkiye' },
+              { icon: <MapPin className="w-6 h-6 text-orange-500 mx-auto" />, title: 'Adres', value: address },
             ].map((c) => (
               <div key={c.title}>
                 {c.icon}
@@ -194,7 +220,7 @@ export default async function HomePage() {
             ))}
           </div>
           <div className="text-center mt-12 text-slate-600 text-sm">
-            © 2026 EBA Kurye. Tüm hakları saklıdır.
+            © 2026 EBA Kurye. Tüm hakları saklıdır. · Çalışma Saatleri: {hours}
           </div>
         </div>
       </section>

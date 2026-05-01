@@ -2,17 +2,32 @@
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { MapPin, ArrowRight, Loader2, Weight, Camera, X } from 'lucide-react';
+import { MapPin, ArrowRight, Loader2, Weight, Camera, X, MessageCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { geocodeAddress, type GeocodingFeature } from '@/lib/mapbox';
+import { geocodeAddress, type GeocodingFeature, MAPBOX_TOKEN } from '@/lib/mapbox';
 import { formatPrice, VEHICLE_LABELS, VEHICLE_ICONS } from '@/lib/pricing';
 import { compressImage, uploadFile } from '@/lib/image-compress';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { Package } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+
+// Fallback pricing (matches DB values)
+const FALLBACK_PRICING = [
+  { vehicle_type: 'motorcycle', base_fare: 150, per_km_rate: 10, min_weight_kg: 0,  max_weight_kg: 10,   is_active: true },
+  { vehicle_type: 'car',        base_fare: 250, per_km_rate: 15, min_weight_kg: 10, max_weight_kg: 75,   is_active: true },
+  { vehicle_type: 'van',        base_fare: 350, per_km_rate: 20, min_weight_kg: 75, max_weight_kg: 1000, is_active: true },
+];
+
+function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.35;
+}
 
 function AddressInput({ label, icon, value, onChange, onSelect, placeholder }: {
   label: string; icon: React.ReactNode; value: string;
@@ -21,6 +36,7 @@ function AddressInput({ label, icon, value, onChange, onSelect, placeholder }: {
   const [results, setResults] = useState<GeocodingFeature[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(false);
 
   const search = useCallback(async (q: string) => {
     if (q.length < 3) { setResults([]); return; }
@@ -29,29 +45,35 @@ function AddressInput({ label, icon, value, onChange, onSelect, placeholder }: {
     setResults(data); setOpen(data.length > 0); setLoading(false);
   }, []);
 
-  useEffect(() => { const t = setTimeout(() => search(value), 350); return () => clearTimeout(t); }, [value, search]);
+  useEffect(() => {
+    if (selected) { setSelected(false); return; }
+    const t = setTimeout(() => search(value), 350);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, search]);
 
   return (
     <div className="space-y-1 relative">
       <Label className="text-slate-300 text-sm">{label}</Label>
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">{icon}</span>
-        <Input className="pl-9 bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500"
+        <Input className="pl-9 pr-8 bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500"
           placeholder={placeholder} value={value}
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 200)}
           autoComplete="off" />
         {loading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />}
+        {selected && !loading && <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-green-400" />}
       </div>
       {open && results.length > 0 && (
         <div className="absolute z-50 w-full mt-1 bg-[#0f2340] border border-[#1e4976]/60 rounded-lg shadow-2xl overflow-hidden">
           {results.map((feat) => (
             <button key={feat.id} type="button"
-              className="w-full text-left px-4 py-3 text-sm text-slate-200 hover:bg-[#1e4976]/50 transition-colors border-b border-[#1e4976]/30 last:border-0"
-              onMouseDown={() => { onSelect(feat); onChange(feat.place_name); setOpen(false); }}>
+              className="w-full text-left px-4 py-3 text-sm text-slate-200 hover:bg-[#1e4976]/50 transition-colors border-b border-[#1e4rance]/30 last:border-0"
+              onMouseDown={() => { onChange(feat.place_name); onSelect(feat); setSelected(true); setOpen(false); }}>
               <span className="font-medium">{feat.text}</span>
-              <span className="text-slate-400 ml-2 text-xs">{feat.place_name.split(',').slice(1).join(',').trim()}</span>
+              <span className="text-slate-400 ml-2 text-xs">{feat.place_name.split(',').slice(1, 3).join(',').trim()}</span>
             </button>
           ))}
         </div>
@@ -77,26 +99,62 @@ function NewOrderForm() {
   const [price, setPrice] = useState<{ vehicle_type: string; distance_km: number; total_price: number; base_fare: number; per_km_rate: number } | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState(1);
+  const [whatsapp, setWhatsapp] = useState('905XXXXXXXXX');
+
+  // Fetch whatsapp number
+  useEffect(() => {
+    const supabase = createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from('site_settings').select('value').eq('key', 'whatsapp_number').single()
+      .then(({ data }: { data: { value: string } | null }) => { if (data?.value) setWhatsapp(data.value); });
+  }, []);
 
   const calculatePrice = useCallback(async () => {
-    if (!form.pickup.lat || !form.dropoff.lat) return;
+    const pu = form.pickup; const do_ = form.dropoff; const kg = parseFloat(form.weight);
+    if (!pu.lat || !do_.lat || isNaN(kg)) return;
     setPriceLoading(true);
+    setPrice(null);
     try {
+      // Try API route first
       const res = await fetch('/api/pricing/calculate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pickupLng: form.pickup.lng, pickupLat: form.pickup.lat, dropoffLng: form.dropoff.lng, dropoffLat: form.dropoff.lat, weightKg: parseFloat(form.weight) }),
+        body: JSON.stringify({ pickupLng: pu.lng, pickupLat: pu.lat, dropoffLng: do_.lng, dropoffLat: do_.lat, weightKg: kg }),
       });
-      if (!res.ok) throw new Error();
-      setPrice(await res.json());
-    } catch { toast.error('Fiyat hesaplanamadı'); }
-    finally { setPriceLoading(false); }
+      if (res.ok) {
+        const data = await res.json();
+        if (data.total_price !== undefined) { setPrice(data); setPriceLoading(false); return; }
+      }
+    } catch {}
+
+    // Fallback: Mapbox or haversine + local pricing
+    let distKm = 5;
+    try {
+      const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${pu.lng},${pu.lat};${do_.lng},${do_.lat}?access_token=${MAPBOX_TOKEN}&overview=simplified`;
+      const r = await fetch(url);
+      const d = await r.json();
+      const rawDist = d.routes?.[0]?.distance;
+      if (rawDist) distKm = rawDist / 1000;
+      else distKm = haversine(pu.lat, pu.lng, do_.lat, do_.lng);
+    } catch {
+      distKm = haversine(pu.lat, pu.lng, do_.lat, do_.lng);
+    }
+    const config = FALLBACK_PRICING.find(p => p.is_active && kg >= p.min_weight_kg && kg <= p.max_weight_kg);
+    if (config) {
+      setPrice({
+        vehicle_type: config.vehicle_type,
+        distance_km: Math.round(distKm * 10) / 10,
+        base_fare: config.base_fare,
+        per_km_rate: config.per_km_rate,
+        total_price: Math.ceil(config.base_fare + distKm * config.per_km_rate),
+      });
+    }
+    setPriceLoading(false);
   }, [form.pickup, form.dropoff, form.weight]);
 
   useEffect(() => {
-    if (form.pickup.lat && form.dropoff.lat && form.weight) {
-      const t = setTimeout(calculatePrice, 500);
+    if (form.pickup.lat && form.dropoff.lat) {
+      const t = setTimeout(calculatePrice, 600);
       return () => clearTimeout(t);
     }
   }, [form.pickup.lat, form.dropoff.lat, form.weight, calculatePrice]);
@@ -132,7 +190,11 @@ function NewOrderForm() {
       });
       if (!res.ok) throw new Error('Sipariş oluşturulamadı');
       const { order } = await res.json();
-      toast.success(`Sipariş oluşturuldu! Takip: ${order.tracking_code}`);
+      if (order.assigned && order.courier_name) {
+        toast.success(`✅ Kurye bulundu! ${order.courier_name} yola çıkıyor. Takip: ${order.tracking_code}`);
+      } else {
+        toast.success(`Sipariş oluşturuldu. En kısa sürede kurye atanacak. Takip: ${order.tracking_code}`);
+      }
       router.push(`/track?code=${order.tracking_code}`);
     } catch { toast.error('Sipariş oluşturulamadı'); }
     finally { setSubmitting(false); }
@@ -272,7 +334,10 @@ function NewOrderForm() {
               </div>
               <div className="space-y-2 text-sm text-slate-400">
                 <div className="flex justify-between"><span>Açılış Ücreti</span><span>{formatPrice(price.base_fare)}</span></div>
-                <div className="flex justify-between"><span>{price.distance_km.toFixed(1)} km × {formatPrice(price.per_km_rate)}/km</span><span>{formatPrice(price.distance_km * price.per_km_rate)}</span></div>
+                <div className="flex justify-between">
+                  <span>{price.distance_km.toFixed(1)} km × {formatPrice(price.per_km_rate)}/km</span>
+                  <span>{formatPrice(price.distance_km * price.per_km_rate)}</span>
+                </div>
               </div>
               <div className="border-t border-[#1e4976]/40 pt-3 flex justify-between items-center">
                 <span className="text-white font-bold text-lg">Toplam</span>
@@ -286,11 +351,32 @@ function NewOrderForm() {
             </div>
           )}
 
-          {!price && !priceLoading && (
+          {!price && !priceLoading && form.pickup.lat === 0 && (
             <p className="text-center text-slate-500 text-sm">
-              Alım ve teslimat adresi seçildiğinde fiyat otomatik hesaplanır.
+              Alım ve teslimat adresini seçtiğinizde fiyat otomatik görünür.
             </p>
           )}
+
+          {/* WhatsApp special price — always visible */}
+          <div className="glass-card rounded-2xl p-5 border border-green-600/30 bg-green-900/10">
+            <p className="text-slate-300 text-sm mb-3 text-center">
+              Büyük hacimli veya kurumsal gönderiler için özel teklif alın:
+            </p>
+            <a
+              href={`https://wa.me/${whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent(
+                `Merhaba, özel fiyat almak istiyorum.\n\n📍 Alım: ${form.pickup.text || '...'}\n🏁 Teslimat: ${form.dropoff.text || '...'}\n⚖️ Ağırlık: ${form.weight} kg${price ? `\n💰 Hesaplanan: ${formatPrice(price.total_price)}` : ''}`
+              )}`}
+              target="_blank" rel="noopener noreferrer"
+            >
+              <button
+                type="button"
+                className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-500 text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200 shadow-lg shadow-green-900/30"
+              >
+                <MessageCircle className="w-5 h-5" />
+                Özel Fiyat Al — WhatsApp
+              </button>
+            </a>
+          </div>
         </div>
       </div>
     </main>

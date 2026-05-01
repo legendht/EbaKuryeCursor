@@ -3,6 +3,8 @@ import { formatPrice } from '@/lib/pricing';
 import { Package, Truck, Users, TrendingUp, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
 import AdminLiveMap from '@/components/admin/AdminLiveMap';
 
+export const dynamic = 'force-dynamic';
+
 export default async function AdminDashboard() {
   const supabase = await createClient();
   const today = new Date().toISOString().split('T')[0];

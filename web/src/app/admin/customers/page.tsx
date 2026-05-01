@@ -1,14 +1,20 @@
 import { createClient } from '@/lib/supabase/server';
 import { formatPrice } from '@/lib/pricing';
 import AdminAccountActions from '@/components/admin/AdminAccountActions';
+import AdminDeleteCustomer from '@/components/admin/AdminDeleteCustomer';
+import AddCustomerForm from '@/components/admin/AddCustomerForm';
+
+export const dynamic = 'force-dynamic';
 
 export default async function AdminCustomersPage() {
   const supabase = await createClient();
-  const { data: customers } = await supabase
+  const { data: customers, error } = await supabase
     .from('profiles')
     .select('*, account:customer_accounts(balance, credit_limit)')
     .eq('role', 'customer')
     .order('created_at', { ascending: false });
+
+  if (error) console.error('[customers page]', error);
 
   return (
     <div className="space-y-6">
@@ -16,6 +22,8 @@ export default async function AdminCustomersPage() {
         <h1 className="text-2xl font-bold text-white">Müşteriler</h1>
         <p className="text-slate-400 text-sm mt-1">{customers?.length || 0} müşteri kayıtlı</p>
       </div>
+
+      <AddCustomerForm />
 
       <div className="glass-card rounded-xl overflow-hidden border border-[#1e4976]/40">
         <div className="overflow-x-auto">
@@ -51,7 +59,10 @@ export default async function AdminCustomersPage() {
                       {new Date(c.created_at as string).toLocaleDateString('tr-TR')}
                     </td>
                     <td className="px-4 py-3">
-                      <AdminAccountActions customerId={c.id as string} currentBalance={account?.balance || 0} />
+                      <div className="flex items-center gap-1">
+                        <AdminAccountActions customerId={c.id as string} currentBalance={account?.balance || 0} />
+                        <AdminDeleteCustomer customerId={c.id as string} fullName={c.full_name as string} />
+                      </div>
                     </td>
                   </tr>
                 );

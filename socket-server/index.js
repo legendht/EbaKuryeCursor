@@ -17,7 +17,30 @@ const httpServer = createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', connections: io?.engine?.clientsCount || 0 }));
-  } else {
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/emit') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        const { event, room, data } = JSON.parse(body);
+        io.to(room).emit(event, data);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        if (!res.headersSent) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid body' }));
+        }
+      }
+    });
+    return;
+  }
+
+  // Socket.io handles its own /socket.io/* routes; ignore others
+  if (!req.url?.startsWith('/socket.io')) {
     res.writeHead(404);
     res.end();
   }
@@ -167,31 +190,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// REST-like internal API for Next.js server to trigger events
-// (Called via HTTP POST from Next.js API routes)
-const express_like_handler = (req, res) => {
-  if (req.method === 'POST' && req.url === '/emit') {
-    let body = '';
-    req.on('data', (chunk) => (body += chunk));
-    req.on('end', () => {
-      try {
-        const { event, room, data } = JSON.parse(body);
-        io.to(room).emit(event, data);
-        res.writeHead(200);
-        res.end(JSON.stringify({ ok: true }));
-      } catch {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: 'Invalid body' }));
-      }
-    });
-  }
-};
-
-httpServer.on('request', (req, res) => {
-  if (req.method === 'POST' && req.url === '/emit') {
-    express_like_handler(req, res);
-  }
-});
 
 httpServer.listen(PORT, () => {
   console.log(`[EBA Kurye Socket Server] Running on port ${PORT}`);

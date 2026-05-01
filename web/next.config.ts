@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
       allowedOrigins: ['localhost:3000'],
     },
   },
+  devIndicators: false,
 };
 
 export default nextConfig;

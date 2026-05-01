@@ -74,9 +74,9 @@ export default function Navbar({ profile }: NavbarProps) {
                   onClick={handleLogout}
                   variant="ghost"
                   size="sm"
-                  className="text-slate-400 hover:text-red-400"
+                  className="text-slate-400 hover:text-red-400 gap-1"
                 >
-                  <LogOut className="w-4 h-4" />
+                  <LogOut className="w-4 h-4" /> Çıkış
                 </Button>
               </>
             ) : (

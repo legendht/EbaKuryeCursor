@@ -28,7 +28,9 @@ export default function LoginPage() {
       return;
     }
     toast.success('Giriş yapıldı!');
-    router.push('/dashboard');
+    // Role göre yönlendir
+    const { data: role } = await supabase.rpc('get_my_role' as never);
+    router.push(role === 'admin' ? '/admin' : '/dashboard');
     router.refresh();
   };
 

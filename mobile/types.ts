@@ -24,5 +24,8 @@ export interface Order {
   distance_km: number | null;
   total_price: number;
   status: OrderStatus;
+  base_fare: number | null;
+  per_km_rate: number | null;
+  rejection_reason: string | null;
   created_at: string;
 }
