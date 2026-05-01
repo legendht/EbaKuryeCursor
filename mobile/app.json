@@ -35,7 +35,14 @@
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "INTERNET",
-        "VIBRATE"
+        "VIBRATE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -52,6 +59,12 @@
           "cameraPermission": "Teslimat fotoğrafı için kamera izni gereklidir."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "781edb17-34e5-4c4b-b26d-ddee487f6d22"
+      }
+    },
+    "owner": "hakantektas"
   }
 }
