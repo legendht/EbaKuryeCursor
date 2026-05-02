@@ -148,7 +148,11 @@ app.prepare().then(() => {
         socket.join('admin:tracking');
         socket.role = 'admin';
 
-        const snapshot = Object.fromEntries(courierLocations);
+        // Snapshot'a status bilgisini de ekle
+        const snapshot = {};
+        for (const [cid, loc] of courierLocations) {
+          snapshot[cid] = { ...loc, status: courierStatuses.get(cid) || 'online' };
+        }
         socket.emit('admin:tracking:snapshot', snapshot);
         console.log(`[Socket] Admin joined tracking: ${socket.id}`);
       } catch (err) {
@@ -182,10 +186,8 @@ app.prepare().then(() => {
     socket.on('courier:status:change', async ({ courierId: cid, status }) => {
       if (socket.courierId !== cid) return;
       courierStatuses.set(cid, status);
+      // Offline olunca konumu bellekten SILME – admin haritası son konumu göstermeye devam etsin
       io.to('admin:tracking').emit('courier:status:update', { courierId: cid, status });
-      if (status === 'offline') {
-        courierLocations.delete(cid);
-      }
       supabase.from('couriers')
         .update({ status, last_seen: new Date().toISOString() })
         .eq('id', cid)
