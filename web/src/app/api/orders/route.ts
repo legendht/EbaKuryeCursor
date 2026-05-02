@@ -50,7 +50,18 @@ export async function POST(req: NextRequest) {
       distanceKm = await getRouteDistance([pickupLng, pickupLat], [dropoffLng, dropoffLat]);
     } catch {}
 
-    const totalPrice = calculatePrice(distanceKm, pricingConfig as never);
+    const rawTotal = calculatePrice(distanceKm, pricingConfig as never);
+
+    // Müşteri indirim oranı (varsa)
+    const { data: account } = await supabase
+      .from('customer_accounts')
+      .select('balance, discount_rate')
+      .eq('customer_id', user.id)
+      .maybeSingle();
+
+    const discountRate = Number(account?.discount_rate ?? 0);
+    const discountAmount = discountRate > 0 ? (rawTotal * discountRate) / 100 : 0;
+    const totalPrice = Math.ceil(rawTotal - discountAmount);
 
     const { data: order, error } = await supabase.from('orders').insert({
       customer_id: user.id,
@@ -64,12 +75,29 @@ export async function POST(req: NextRequest) {
       distance_km: Math.round(distanceKm * 10) / 10,
       base_fare: pricingConfig.base_fare,
       per_km_rate: pricingConfig.per_km_rate,
-      total_price: Math.ceil(totalPrice),
+      total_price: totalPrice,
+      discount_amount: Math.round(discountAmount * 100) / 100,
       notes: notes || null,
       status: 'confirmed',
     }).select().single();
 
     if (error) throw error;
+
+    // Müşterinin bakiyesi yeterliyse otomatik düş
+    let paidFromBalance = false;
+    if (account && Number(account.balance) >= totalPrice) {
+      try {
+        const { data: chargeRes } = await supabase.rpc('charge_customer_balance' as never, {
+          p_order_id: order.id,
+        });
+        if (chargeRes && (chargeRes as { charged: boolean }).charged) {
+          paidFromBalance = true;
+          order.paid_from_balance = true;
+        }
+      } catch (chargeErr) {
+        console.error('[charge_customer_balance]', chargeErr);
+      }
+    }
 
     // Auto-assign nearest courier via SECURITY DEFINER function
     let assignResult: { assigned: boolean; courier_id?: string; courier_name?: string } = { assigned: false };
@@ -89,11 +117,12 @@ export async function POST(req: NextRequest) {
       await emitSocket(`courier:${assignResult.courier_id}`, 'courier:new:job', {
         orderId: order.id,
         trackingCode: order.tracking_code,
+        paidFromBalance,
       });
     }
 
     return NextResponse.json({
-      order: { ...order, assigned: assignResult.assigned, courier_name: assignResult.courier_name },
+      order: { ...order, assigned: assignResult.assigned, courier_name: assignResult.courier_name, paid_from_balance: paidFromBalance },
     }, { status: 201 });
   } catch (err) {
     console.error('[orders POST]', err);

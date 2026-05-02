@@ -33,14 +33,40 @@ export async function POST(req: NextRequest) {
       distanceKm = haversineDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
     }
 
-    const totalPrice = calculatePrice(distanceKm, config as any);
+    const rawTotal = calculatePrice(distanceKm, config as any);
+
+    // Giriş yapmış kullanıcı varsa indirim uygula
+    let discountRate = 0;
+    let balance = 0;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: acct } = await supabase
+          .from('customer_accounts')
+          .select('balance, discount_rate')
+          .eq('customer_id', user.id)
+          .maybeSingle();
+        if (acct) {
+          discountRate = Number(acct.discount_rate ?? 0);
+          balance = Number(acct.balance ?? 0);
+        }
+      }
+    } catch {}
+
+    const discountAmount = discountRate > 0 ? (rawTotal * discountRate) / 100 : 0;
+    const totalPrice = Math.ceil(rawTotal - discountAmount);
 
     return NextResponse.json({
       vehicle_type: config.vehicle_type,
       distance_km: Math.round(distanceKm * 10) / 10,
       base_fare: config.base_fare,
       per_km_rate: config.per_km_rate,
-      total_price: Math.ceil(totalPrice),
+      raw_total: Math.ceil(rawTotal),
+      discount_rate: discountRate,
+      discount_amount: Math.round(discountAmount * 100) / 100,
+      total_price: totalPrice,
+      balance,
+      will_pay_from_balance: balance >= totalPrice && balance > 0,
     });
   } catch (err) {
     console.error('[pricing/calculate]', err);

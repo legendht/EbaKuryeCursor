@@ -8,8 +8,9 @@ import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
+import OrdersScreen from './src/screens/OrdersScreen';
 
-type Screen = 'splash' | 'permissions' | 'login' | 'register' | 'pending' | 'home' | 'profile';
+type Screen = 'splash' | 'permissions' | 'login' | 'register' | 'pending' | 'home' | 'profile' | 'orders';
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
@@ -114,6 +115,7 @@ export default function App() {
         courierId={courierId}
         onLogout={() => { setCourierId(null); setScreen('login'); }}
         onProfile={() => setScreen('profile')}
+        onOrders={() => setScreen('orders')}
       />
     );
   }
@@ -124,6 +126,15 @@ export default function App() {
         courierId={courierId}
         onBack={() => setScreen('home')}
         onLogout={() => { setCourierId(null); setScreen('login'); }}
+      />
+    );
+  }
+
+  if (screen === 'orders' && courierId) {
+    return (
+      <OrdersScreen
+        courierId={courierId}
+        onBack={() => setScreen('home')}
       />
     );
   }

@@ -155,7 +155,7 @@ function TrackPage() {
   }, [code, order]);
 
   const steps = [
-    { key: 'confirmed', label: 'Onaylandı', icon: <CheckCircle2 className="w-4 h-4" /> },
+    { key: 'confirmed', label: 'Onay Bekliyor', icon: <Clock className="w-4 h-4" /> },
     { key: 'assigned', label: 'Kurye Atandı', icon: <Truck className="w-4 h-4" /> },
     { key: 'pickup', label: 'Paket Alındı', icon: <Package className="w-4 h-4" /> },
     { key: 'in_transit', label: 'Yolda', icon: <MapPin className="w-4 h-4" /> },

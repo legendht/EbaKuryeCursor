@@ -8,6 +8,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import SignatureScreen from 'react-native-signature-canvas';
 import { supabase } from '../lib/supabase';
 import { startLocationTracking, stopLocationTracking, getSocket } from '../lib/locationService';
+import { absoluteUrl } from '../lib/urls';
 import type { Order } from '../../types';
 
 const C = {
@@ -41,9 +42,25 @@ interface Props {
   courierId: string;
   onLogout: () => void;
   onProfile: () => void;
+  onOrders: () => void;
 }
 
-export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 6) return 'İyi geceler';
+  if (h < 12) return 'Günaydın';
+  if (h < 18) return 'Merhaba';
+  return 'İyi akşamlar';
+}
+
+interface DailyStats {
+  deliveries: number;
+  km: number;
+  hours: number;
+  earnings: number;
+}
+
+export default function HomeScreen({ courierId, onLogout, onProfile, onOrders }: Props) {
   const [courierStatus, setCourierStatus] = useState<CourierStatus>('offline');
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,11 +71,13 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   const [breakModal, setBreakModal] = useState(false);
   const [breakReason, setBreakReason] = useState('');
   const [customBreak, setCustomBreak] = useState('');
-  const [newJob, setNewJob] = useState<Order | null>(null);
+  const [newJob, setNewJob] = useState<(Order & { paidFromBalance?: boolean }) | null>(null);
   const [rejectOrder, setRejectOrder] = useState<Order | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [customReason, setCustomReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
+  const [stats, setStats] = useState<DailyStats>({ deliveries: 0, km: 0, hours: 0, earnings: 0 });
+  const [onlineSince, setOnlineSince] = useState<number | null>(null);
 
   // Camera
   const [cameraModal, setCameraModal] = useState<{ orderId: string; phase: 'pickup' | 'delivery' } | null>(null);
@@ -90,6 +109,22 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     setOrders((data || []) as Order[]);
   }, [courierId]);
 
+  const fetchDailyStats = useCallback(async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const { data } = await supabase
+      .from('orders')
+      .select('distance_km, total_price, delivered_at, created_at, status')
+      .eq('courier_id', courierId)
+      .eq('status', 'delivered')
+      .gte('delivered_at', startOfDay.toISOString());
+    const list = data || [];
+    const deliveries = list.length;
+    const km = list.reduce((s, o) => s + Number(o.distance_km || 0), 0);
+    const earnings = list.reduce((s, o) => s + Number(o.total_price || 0), 0);
+    setStats((prev) => ({ ...prev, deliveries, km: Math.round(km * 10) / 10, earnings }));
+  }, [courierId]);
+
   useEffect(() => {
     supabase.from('profiles').select('full_name').eq('id', courierId).single()
       .then(({ data }) => setProfile(data));
@@ -99,13 +134,17 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
           setProfile((prev) => prev ? { ...prev, profile_photo_url: data.profile_photo_url } : prev);
           if (['online', 'offline', 'break', 'busy'].includes(data.status)) {
             setCourierStatus(data.status as CourierStatus);
+            if (data.status === 'online' || data.status === 'busy') {
+              setOnlineSince(Date.now());
+            }
           }
         }
       });
     fetchOrders().finally(() => setLoading(false));
+    fetchDailyStats();
 
     const socket = getSocket();
-    socket?.on('courier:new:job', async () => {
+    socket?.on('courier:new:job', async (payload: { paidFromBalance?: boolean }) => {
       const { data } = await supabase
         .from('orders')
         .select('*')
@@ -114,12 +153,23 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
-      if (data) setNewJob(data as Order);
+      if (data) setNewJob({ ...(data as Order), paidFromBalance: payload?.paidFromBalance });
       fetchOrders();
     });
 
     return () => { socket?.off('courier:new:job'); };
-  }, [courierId, fetchOrders]);
+  }, [courierId, fetchOrders, fetchDailyStats]);
+
+  // Çalışma süresini dakikada bir güncelle
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (onlineSince) {
+        const hours = (Date.now() - onlineSince) / 3_600_000;
+        setStats((prev) => ({ ...prev, hours: Math.round(hours * 10) / 10 }));
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [onlineSince]);
 
   const emitStatus = useCallback((newStatus: CourierStatus) => {
     getSocket()?.emit('courier:status:change', { courierId, status: newStatus });
@@ -132,6 +182,7 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       if (newStatus === 'online') {
         await startLocationTracking(courierId);
         await supabase.from('couriers').update({ status: 'online', break_reason: null }).eq('id', courierId);
+        if (!onlineSince) setOnlineSince(Date.now());
       } else if (newStatus === 'break') {
         stopLocationTracking();
         await supabase.from('couriers').update({ status: 'break', break_reason: reason || null }).eq('id', courierId);
@@ -140,6 +191,7 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       } else {
         stopLocationTracking();
         await supabase.from('couriers').update({ status: 'offline', break_reason: null }).eq('id', courierId);
+        setOnlineSince(null);
       }
       emitStatus(newStatus);
     } catch (err: unknown) {
@@ -255,7 +307,9 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       await updateOrderStatus(cameraModal.orderId, nextStatus);
 
       if (cameraModal.phase === 'delivery') {
+        await supabase.from('orders').update({ delivered_at: new Date().toISOString() }).eq('id', cameraModal.orderId);
         await applyStatus('online'); // back to online after delivery
+        fetchDailyStats();
       }
 
       setPhotoUri(null);
@@ -303,12 +357,14 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       await supabase.from('orders').update({
         delivery_signature_url: url,
         delivery_photo_url: url,
+        delivered_at: new Date().toISOString(),
       }).eq('id', signatureModal.orderId);
       await updateOrderStatus(signatureModal.orderId, 'delivered');
       await applyStatus('online');
       setSignatureModal(null);
       Alert.alert('✅', 'Teslimat tamamlandı!');
       fetchOrders();
+      fetchDailyStats();
     } catch {
       Alert.alert('Hata', 'İmza yüklenemedi');
     } finally {
@@ -383,19 +439,24 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     </View>
   );
 
+  const photoUrl = absoluteUrl(profile?.profile_photo_url ?? null);
+
   return (
     <View style={styles.container}>
       {/* ── Header ── */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={onProfile} style={styles.avatar}>
-            {profile?.profile_photo_url
-              ? <Image source={{ uri: profile.profile_photo_url }} style={styles.avatarImg} />
+            {photoUrl
+              ? <Image source={{ uri: photoUrl }} style={styles.avatarImg} />
               : <Text style={styles.avatarEmoji}>👤</Text>
             }
           </TouchableOpacity>
-          <View>
-            <Text style={styles.greeting}>{profile?.full_name?.split(' ')[0] ?? 'Kurye'} 👋</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.greetingSmall}>{getGreeting()},</Text>
+            <Text style={styles.greeting} numberOfLines={1}>
+              {profile?.full_name?.split(' ')[0] ?? 'Kurye'} 👋
+            </Text>
             <View style={styles.statusIndicator}>
               <View style={[styles.dot, { backgroundColor: sd.dot }]} />
               <Text style={[styles.statusLabel, { color: sd.color }]}>{sd.label}</Text>
@@ -405,8 +466,11 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
 
         <View style={styles.headerRight}>
           <TouchableOpacity style={styles.statusBtn} onPress={() => setStatusModal((v) => !v)}>
-            <Text style={styles.statusBtnText}>{sd.emoji} {sd.label}</Text>
+            <Text style={styles.statusBtnText}>{sd.emoji}</Text>
             <Text style={{ color: C.muted, fontSize: 12 }}>{statusModal ? '▲' : '▼'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onOrders} style={styles.iconBtn}>
+            <Text style={{ fontSize: 20 }}>📋</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={onProfile} style={styles.iconBtn}>
             <Text style={{ fontSize: 20 }}>⚙️</Text>
@@ -415,6 +479,14 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
             <Text style={{ fontSize: 20 }}>🚪</Text>
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* ── Günlük istatistikler ── */}
+      <View style={styles.statsBar}>
+        <StatMini emoji="📦" label="Teslimat" value={String(stats.deliveries)} />
+        <StatMini emoji="🛣️" label="KM" value={stats.km.toFixed(1)} />
+        <StatMini emoji="⏱️" label="Saat" value={stats.hours.toFixed(1)} />
+        <StatMini emoji="₺" label="Kazanç" value={stats.earnings ? String(Math.round(stats.earnings)) : '0'} />
       </View>
 
       {statusModal && (
@@ -523,6 +595,11 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
                 <Text style={styles.modalAddr}>📍 {newJob.pickup_address}</Text>
                 <Text style={styles.modalAddr}>🏁 {newJob.dropoff_address}</Text>
                 <Text style={styles.modalPrice}>₺{newJob.total_price} · {newJob.distance_km?.toFixed(1)} km</Text>
+                {newJob.paidFromBalance && (
+                  <View style={styles.paidNotice}>
+                    <Text style={styles.paidNoticeText}>✓ Bakiye ödenmiştir – nakit/kart tahsilatı yapmayın</Text>
+                  </View>
+                )}
               </>
             )}
             <View style={styles.modalBtns}>
@@ -689,6 +766,16 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   );
 }
 
+function StatMini({ emoji, label, value }: { emoji: string; label: string; value: string }) {
+  return (
+    <View style={styles.statMiniCard}>
+      <Text style={styles.statMiniEmoji}>{emoji}</Text>
+      <Text style={styles.statMiniValue}>{value}</Text>
+      <Text style={styles.statMiniLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
   header: {
@@ -697,7 +784,21 @@ const styles = StyleSheet.create({
     backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border, zIndex: 20,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  greetingSmall: { color: C.muted, fontSize: 12 },
+  statsBar: {
+    flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 10,
+    backgroundColor: C.card + '80',
+  },
+  statMiniCard: {
+    flex: 1, backgroundColor: C.card, borderRadius: 12, padding: 10,
+    borderWidth: 1, borderColor: C.border, alignItems: 'center',
+  },
+  statMiniEmoji: { fontSize: 16 },
+  statMiniValue: { color: C.text, fontSize: 15, fontWeight: '700', marginTop: 2 },
+  statMiniLabel: { color: C.muted, fontSize: 10, marginTop: 1 },
+  paidNotice: { marginTop: 8, backgroundColor: C.green + '25', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: C.green + '60' },
+  paidNoticeText: { color: C.green, fontWeight: '700', textAlign: 'center', fontSize: 13 },
   avatar: {
     width: 42, height: 42, borderRadius: 21,
     backgroundColor: '#1e4976', alignItems: 'center', justifyContent: 'center',

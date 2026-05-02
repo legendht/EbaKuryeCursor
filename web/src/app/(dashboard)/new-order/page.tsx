@@ -169,7 +169,11 @@ function NewOrderForm() {
   };
 
   const handleSubmit = async () => {
-    if (!form.pickup.lat || !form.dropoff.lat) { toast.error('Lütfen adres seçin'); return; }
+    if (!form.pickup.lat || !form.dropoff.lat) { toast.error('Lütfen alım ve teslimat adresini seçin'); return; }
+    if (!form.pickupContact.trim()) { toast.error('Gönderici adı zorunludur'); return; }
+    if (!form.pickupPhone.trim()) { toast.error('Gönderici telefonu zorunludur'); return; }
+    if (!form.dropoffContact.trim()) { toast.error('Alıcı adı zorunludur'); return; }
+    if (!form.dropoffPhone.trim()) { toast.error('Alıcı telefonu zorunludur'); return; }
     if (!price) { toast.error('Önce fiyat hesaplayın'); return; }
     setSubmitting(true);
     try {
@@ -229,14 +233,14 @@ function NewOrderForm() {
               onChange={(v) => setForm((f) => ({ ...f, pickup: { text: v, lat: 0, lng: 0 } }))}
               onSelect={(feat) => setForm((f) => ({ ...f, pickup: { text: feat.place_name, lat: feat.center[1], lng: feat.center[0] } }))}
               placeholder="Alım adresi ara..." />
-            <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label className="text-slate-400 text-xs">Alıcı Adı (isteğe bağlı)</Label>
+                <Label className="text-slate-400 text-xs">Gönderici Adı <span className="text-red-400">*</span></Label>
                 <Input className="bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500 text-sm"
                   value={form.pickupContact} onChange={(e) => setForm((f) => ({ ...f, pickupContact: e.target.value }))} placeholder="Ad Soyad" />
               </div>
               <div className="space-y-1">
-                <Label className="text-slate-400 text-xs">Telefon</Label>
+                <Label className="text-slate-400 text-xs">Gönderici Telefonu <span className="text-red-400">*</span></Label>
                 <Input className="bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500 text-sm"
                   value={form.pickupPhone} onChange={(e) => setForm((f) => ({ ...f, pickupPhone: e.target.value }))} placeholder="05XX..." />
               </div>
@@ -255,12 +259,12 @@ function NewOrderForm() {
               placeholder="Teslimat adresi ara..." />
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label className="text-slate-400 text-xs">Teslim Edilecek Kişi</Label>
+                <Label className="text-slate-400 text-xs">Teslim Edilecek Kişi <span className="text-red-400">*</span></Label>
                 <Input className="bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500 text-sm"
                   value={form.dropoffContact} onChange={(e) => setForm((f) => ({ ...f, dropoffContact: e.target.value }))} placeholder="Ad Soyad" />
               </div>
               <div className="space-y-1">
-                <Label className="text-slate-400 text-xs">Telefon</Label>
+                <Label className="text-slate-400 text-xs">Alıcı Telefonu <span className="text-red-400">*</span></Label>
                 <Input className="bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500 text-sm"
                   value={form.dropoffPhone} onChange={(e) => setForm((f) => ({ ...f, dropoffPhone: e.target.value }))} placeholder="05XX..." />
               </div>
@@ -280,14 +284,14 @@ function NewOrderForm() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-slate-300 text-sm">Açıklama (isteğe bağlı)</Label>
+              <Label className="text-slate-300 text-sm">Açıklama</Label>
               <Input className="bg-[#0f2340]/80 border-[#1e4976]/60 text-white placeholder:text-slate-500 focus:border-orange-500"
                 value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Paket içeriği..." />
             </div>
 
             {/* Cargo Photo */}
             <div className="space-y-2">
-              <Label className="text-slate-300 text-sm">Ürün Fotoğrafı (isteğe bağlı)</Label>
+              <Label className="text-slate-300 text-sm">Ürün Fotoğrafı</Label>
               {cargoPhotoPreview ? (
                 <div className="relative inline-block">
                   {/* eslint-disable-next-line @next/next/no-img-element */}

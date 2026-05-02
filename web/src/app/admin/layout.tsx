@@ -8,13 +8,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) redirect('/login');
 
-  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle();
-  let role = profile?.role ?? null;
-  if (!role) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data: r } = await (supabase as any).rpc('get_my_role');
-    role = (r as string | null) ?? null;
-  }
+  // SECURITY DEFINER fonksiyonu — RLS'yi bypass eder
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: role } = await (supabase as any).rpc('get_my_role');
 
   if (role !== 'admin') redirect('/dashboard');
 

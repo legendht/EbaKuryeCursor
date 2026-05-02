@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../lib/supabase';
+import { absoluteUrl } from '../lib/urls';
 
 const C = {
   bg: '#0a1628', card: '#0f2340', border: '#1e4976',
@@ -103,13 +104,19 @@ export default function ProfileScreen({ courierId, onBack, onLogout }: Props) {
     if (!photoUri) return;
     setUploadingPhoto(true);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const formData = new FormData();
       formData.append('file', { uri: photoUri, type: 'image/jpeg', name: 'profile.jpg' } as never);
       formData.append('phase', 'profile');
       const res = await fetch(
         `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/api/upload`,
-        { method: 'POST', body: formData }
+        {
+          method: 'POST',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          body: formData,
+        }
       );
+      if (!res.ok) throw new Error('Upload failed');
       const { url } = await res.json();
       await supabase.from('couriers').update({ profile_photo_url: url }).eq('id', courierId);
       setCourier((prev) => prev ? { ...prev, profile_photo_url: url } : prev);
@@ -117,7 +124,7 @@ export default function ProfileScreen({ courierId, onBack, onLogout }: Props) {
       setCameraOpen(false);
       Alert.alert('✅', 'Profil fotoğrafı güncellendi.');
     } catch {
-      Alert.alert('Hata', 'Fotoğraf yüklenemedi.');
+      Alert.alert('Hata', 'Fotoğraf yüklenemedi. Sunucu bağlantısını kontrol edin.');
     } finally {
       setUploadingPhoto(false);
     }
@@ -196,7 +203,7 @@ export default function ProfileScreen({ courierId, onBack, onLogout }: Props) {
         <View style={styles.photoSection}>
           <TouchableOpacity style={styles.photoCircle} onPress={openCamera}>
             {courier?.profile_photo_url
-              ? <Image source={{ uri: courier.profile_photo_url }} style={styles.photoImg} />
+              ? <Image source={{ uri: absoluteUrl(courier.profile_photo_url) || '' }} style={styles.photoImg} />
               : <Text style={styles.photoPlaceholder}>👤</Text>
             }
             <View style={styles.photoBadge}>
