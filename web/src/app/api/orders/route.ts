@@ -3,6 +3,20 @@ import { createClient } from '@/lib/supabase/server';
 import { haversineDistance } from '@/lib/mapbox';
 import { getVehicleForWeight, calculatePrice } from '@/lib/pricing';
 
+async function emitSocket(room: string, event: string, data: Record<string, unknown>) {
+  const url = process.env.SOCKET_INTERNAL_URL;
+  if (!url) return;
+  try {
+    await fetch(`${url}/emit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room, event, data }),
+    });
+  } catch (err) {
+    console.error('[socket emit]', err);
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const supabase = await createClient();
@@ -69,6 +83,13 @@ export async function POST(req: NextRequest) {
       if (data) assignResult = data as typeof assignResult;
     } catch (assignErr) {
       console.error('[assign_nearest_courier]', assignErr);
+    }
+
+    if (assignResult.assigned && assignResult.courier_id) {
+      await emitSocket(`courier:${assignResult.courier_id}`, 'courier:new:job', {
+        orderId: order.id,
+        trackingCode: order.tracking_code,
+      });
     }
 
     return NextResponse.json({

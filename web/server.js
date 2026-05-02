@@ -19,21 +19,46 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 );
 
-const app = next({ dev });
+const app = next({ dev, hostname: 'localhost', port });
 const handle = app.getRequestHandler();
 
 // In-memory courier state
-const courierLocations = new Map(); // courierId -> { lat, lng, heading, speed, timestamp }
-const courierSockets   = new Map(); // courierId -> socketId
+const courierLocations        = new Map(); // courierId -> { lat, lng, heading, speed, timestamp }
+const courierSockets          = new Map(); // courierId -> socketId
+const courierStatuses         = new Map(); // courierId -> status string
+const courierDisconnectTimers = new Map(); // courierId -> timeout handle (grace period)
+
+// Break couriers stay on map for 4 hours; online/busy couriers get 3 minutes
+const GRACE_MS = { break: 4 * 60 * 60 * 1000, default: 3 * 60 * 1000 };
 
 app.prepare().then(() => {
-  /**
-   * Dinleyici sırası kritik:
-   * 1) createServer() — callback YOK (aksi halde Next ilk çalışır, Engine.io sonra gelir → çift yanıt / kopuk sayfa)
-   * 2) new Server(httpServer) — Engine.io ilk request listener'ı ekler
-   * 3) httpServer.on('request', …) — Next.js; /socket.io için dokunmaz (Engine zaten yanıtladı)
-   */
-  const httpServer = createServer();
+  const httpServer = createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/emit') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { room, event, data } = JSON.parse(body || '{}');
+          if (!room || !event) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'room and event required' }));
+            return;
+          }
+          io.to(room).emit(event, data || {});
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid json' }));
+        }
+      });
+      return;
+    }
+    // Socket.io polling requests are handled by the Socket.io engine, not Next.js
+    if (req.url && req.url.startsWith('/socket.io/')) return;
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  });
 
   const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -64,6 +89,14 @@ app.prepare().then(() => {
         courierSockets.set(courierId, socket.id);
         socket.join(`courier:${courierId}`);
         socket.emit('courier:registered', { courierId });
+
+        // Cancel any pending grace-period removal on reconnect
+        if (courierDisconnectTimers.has(courierId)) {
+          clearTimeout(courierDisconnectTimers.get(courierId));
+          courierDisconnectTimers.delete(courierId);
+          console.log(`[Socket] Courier reconnected, grace period cancelled: ${courierId}`);
+        }
+
         console.log(`[Socket] Courier registered: ${courierId}`);
       } catch (err) {
         console.error('[Socket] courier:register error:', err);
@@ -145,16 +178,14 @@ app.prepare().then(() => {
       }
     });
 
-    // ── Courier status change (online/offline/break) ───────────────────
+    // ── Courier status change (online/offline/break/busy) ─────────────
     socket.on('courier:status:change', async ({ courierId: cid, status }) => {
       if (socket.courierId !== cid) return;
-      // Broadcast to admin room so dashboard updates instantly
+      courierStatuses.set(cid, status);
       io.to('admin:tracking').emit('courier:status:update', { courierId: cid, status });
-      // If going offline, remove from in-memory location cache
       if (status === 'offline') {
         courierLocations.delete(cid);
       }
-      // Persist status to DB
       supabase.from('couriers')
         .update({ status, last_seen: new Date().toISOString() })
         .eq('id', cid)
@@ -168,20 +199,29 @@ app.prepare().then(() => {
 
     socket.on('disconnect', () => {
       if (socket.courierId) {
-        courierSockets.delete(socket.courierId);
-        courierLocations.delete(socket.courierId);
-        console.log(`[Socket] Courier disconnected: ${socket.courierId}`);
+        const cid = socket.courierId;
+        courierSockets.delete(cid);
+
+        // Break couriers stay on map for 4 h (phone may sleep during break).
+        // Online/busy couriers get a 3-minute window to reconnect.
+        const status = courierStatuses.get(cid) || 'online';
+        const delay = status === 'break' ? GRACE_MS.break : GRACE_MS.default;
+
+        const timer = setTimeout(() => {
+          courierLocations.delete(cid);
+          courierStatuses.delete(cid);
+          courierDisconnectTimers.delete(cid);
+          io.to('admin:tracking').emit('courier:status:update', { courierId: cid, status: 'offline' });
+          console.log(`[Socket] Courier removed after ${delay / 60000} min grace: ${cid}`);
+        }, delay);
+
+        courierDisconnectTimers.set(cid, timer);
+        console.log(`[Socket] Courier disconnected (${status}, grace ${delay / 60000} min): ${cid}`);
       }
     });
   });
 
-  httpServer.on('request', (req, res) => {
-    if (req.url && req.url.startsWith('/socket.io/')) return;
-    const parsedUrl = parse(req.url, true);
-    handle(req, res, parsedUrl);
-  });
-
-  httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`[EBA Kurye] Server ready on port ${port}`);
+  httpServer.listen(port, () => {
+    console.log(`[EBA Kurye] Server ready on http://localhost:${port}`);
   });
 });

@@ -8,6 +8,8 @@ type OrderRow = {
   pickup_address: string; dropoff_address: string;
   vehicle_type: string; total_price: number;
   courier_id: string | null; created_at: string;
+  pickup_photo_url: string | null; delivery_photo_url: string | null;
+  pickup_signature_url: string | null; delivery_signature_url: string | null;
   customer?: { full_name: string; phone: string } | null;
   courier?: { vehicle_type: string; vehicle_plate: string } | null;
 };
@@ -16,7 +18,7 @@ export default async function AdminOrdersPage() {
   const supabase = await createClient();
   const { data: orders, error } = await supabase
     .from('orders')
-    .select('id, tracking_code, status, pickup_address, dropoff_address, vehicle_type, total_price, courier_id, created_at, customer:profiles(full_name, phone), courier:couriers(vehicle_type, vehicle_plate)')
+    .select('id, tracking_code, status, pickup_address, dropoff_address, vehicle_type, total_price, courier_id, created_at, pickup_photo_url, delivery_photo_url, pickup_signature_url, delivery_signature_url, customer:profiles(full_name, phone), courier:couriers(vehicle_type, vehicle_plate)')
     .order('created_at', { ascending: false })
     .limit(200);
 
@@ -68,12 +70,13 @@ export default async function AdminOrdersPage() {
                 <th className="text-left text-slate-400 font-medium px-4 py-3">Tutar</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-3">Durum</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-3">Kurye</th>
+                <th className="text-left text-slate-400 font-medium px-4 py-3">Kanıtlar</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-3">İptal</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && (
-                <tr><td colSpan={8} className="text-center text-slate-500 py-16">Henüz sipariş yok</td></tr>
+                <tr><td colSpan={9} className="text-center text-slate-500 py-16">Henüz sipariş yok</td></tr>
               )}
               {rows.map((order) => (
                 <AdminOrderRow

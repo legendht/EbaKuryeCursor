@@ -12,6 +12,8 @@ type OrderRow = {
   pickup_address: string; dropoff_address: string;
   vehicle_type: string; total_price: number;
   courier_id: string | null; created_at: string;
+  pickup_photo_url: string | null; delivery_photo_url: string | null;
+  pickup_signature_url: string | null; delivery_signature_url: string | null;
   customer?: { full_name: string; phone: string } | null;
   courier?: { vehicle_type: string; vehicle_plate: string } | null;
 };
@@ -29,6 +31,20 @@ const STATUS_OPTIONS = [
   { value: 'cancelled',  label: 'İptal Edildi' },
   { value: 'failed',     label: 'Başarısız' },
 ];
+
+function ProofLink({ href, label }: { href: string | null; label: string }) {
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center rounded-md border border-orange-500/40 bg-orange-500/10 px-2 py-1 text-[11px] font-medium text-orange-300 hover:bg-orange-500/20"
+    >
+      {label}
+    </a>
+  );
+}
 
 interface Props {
   order: OrderRow;
@@ -177,6 +193,19 @@ export default function AdminOrderRow({ order, couriers }: Props) {
             </select>
           ) : <span className="text-slate-600 text-xs">—</span>
         )}
+      </td>
+
+      {/* Proof photos/signatures */}
+      <td className="px-4 py-3 min-w-[150px]">
+        <div className="flex flex-wrap gap-1.5">
+          <ProofLink href={order.pickup_photo_url} label="Alım Foto" />
+          <ProofLink href={order.delivery_photo_url} label="Teslim Foto" />
+          <ProofLink href={order.pickup_signature_url} label="Alım İmza" />
+          <ProofLink href={order.delivery_signature_url} label="Teslim İmza" />
+          {!order.pickup_photo_url && !order.delivery_photo_url && !order.pickup_signature_url && !order.delivery_signature_url && (
+            <span className="text-xs text-slate-600">Yok</span>
+          )}
+        </div>
       </td>
 
       {/* Cancel */}

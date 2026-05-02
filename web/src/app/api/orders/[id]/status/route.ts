@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
+async function emitSocket(room: string, event: string, data: Record<string, unknown>) {
+  const url = process.env.SOCKET_INTERNAL_URL;
+  if (!url) return;
+  try {
+    await fetch(`${url}/emit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room, event, data }),
+    });
+  } catch {}
+}
+
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
@@ -29,8 +41,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     if (error) throw error;
 
-    // If courier is being assigned manually, set them as busy
-    if (courierId && status === 'assigned') {
+    // If courier is being assigned manually, set them as busy and notify the app.
+    if (courierId && (status === 'assigned' || courierId !== undefined)) {
       await supabase.from('couriers').update({ status: 'busy' }).eq('id', courierId);
       // Notify the courier
       await supabase.from('notifications').insert({
@@ -40,6 +52,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         type: 'new_job',
         order_id: id,
       });
+      await emitSocket(`courier:${courierId}`, 'courier:new:job', {
+        orderId: id,
+        trackingCode: order.tracking_code,
+      });
     }
 
     // Free courier if order is done/cancelled
@@ -47,13 +63,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       await supabase.from('couriers').update({ status: 'online' }).eq('id', order.courier_id);
     }
 
-    try {
-      await fetch(`${process.env.SOCKET_INTERNAL_URL}/emit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: 'order:status:changed', room: `order:${order.tracking_code}`, data: { status, orderId: id } }),
-      });
-    } catch {}
+    await emitSocket(`order:${order.tracking_code}`, 'order:status:changed', { status, orderId: id });
 
     return NextResponse.json({ ok: true });
   } catch (err) {

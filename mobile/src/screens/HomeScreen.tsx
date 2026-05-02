@@ -5,6 +5,7 @@ import {
   Modal, TextInput, ScrollView, Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import SignatureScreen from 'react-native-signature-canvas';
 import { supabase } from '../lib/supabase';
 import { startLocationTracking, stopLocationTracking, getSocket } from '../lib/locationService';
 import type { Order } from '../../types';
@@ -12,10 +13,10 @@ import type { Order } from '../../types';
 const C = {
   bg: '#0a1628', card: '#0f2340', border: '#1e4976',
   orange: '#f97316', text: '#f0f4f8', muted: '#64748b',
-  green: '#22c55e', red: '#ef4444', yellow: '#eab308',
+  green: '#22c55e', red: '#ef4444', yellow: '#eab308', blue: '#3b82f6',
 };
 
-type CourierStatus = 'online' | 'offline' | 'break';
+type CourierStatus = 'online' | 'offline' | 'break' | 'busy';
 
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Beklemede', confirmed: 'Onaylandı', assigning: 'Kurye Aranıyor',
@@ -23,18 +24,18 @@ const STATUS_LABELS: Record<string, string> = {
   delivered: 'Teslim Edildi', cancelled: 'İptal',
 };
 
-const REJECT_REASONS = [
-  'Trafik yoğunluğu', 'Araç arızası', 'Mesafe çok uzak',
-  'Hastayım', 'Yakıt yok', 'Yolda başka iş var', 'Diğer',
-];
+const REJECT_REASONS = ['Motor Arıza', 'Yakıt Az', 'Hastayım', 'Diğer'];
 
 const BREAK_REASONS = ['Yemek', 'İbadet', 'Motor Arızası', 'Dinlenme', 'Diğer'];
 
 const STATUS_DISPLAY: Record<CourierStatus, { label: string; color: string; dot: string; emoji: string }> = {
-  online:  { label: 'Online',  color: C.green,  dot: C.green,  emoji: '🟢' },
-  offline: { label: 'Offline', color: C.muted,  dot: C.muted,  emoji: '⚫' },
-  break:   { label: 'Mola',    color: C.yellow, dot: C.yellow, emoji: '🟡' },
+  online:  { label: 'Online',     color: C.green,  dot: C.green,  emoji: '🟢' },
+  offline: { label: 'Offline',    color: C.muted,  dot: C.muted,  emoji: '⚫' },
+  break:   { label: 'Mola',       color: C.yellow, dot: C.yellow, emoji: '🟡' },
+  busy:    { label: 'Siparişte',  color: C.blue,   dot: C.blue,   emoji: '🔵' },
 };
+
+const APP_URL = process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000';
 
 interface Props {
   courierId: string;
@@ -49,18 +50,11 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [profile, setProfile] = useState<{ full_name: string; profile_photo_url?: string } | null>(null);
 
-  // Status dropdown modal
   const [statusModal, setStatusModal] = useState(false);
-
-  // Break reason modal
   const [breakModal, setBreakModal] = useState(false);
   const [breakReason, setBreakReason] = useState('');
   const [customBreak, setCustomBreak] = useState('');
-
-  // New job alert
   const [newJob, setNewJob] = useState<Order | null>(null);
-
-  // Reject modal
   const [rejectOrder, setRejectOrder] = useState<Order | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [customReason, setCustomReason] = useState('');
@@ -71,6 +65,19 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  // Delivery proof choice
+  const [deliveryChoiceModal, setDeliveryChoiceModal] = useState<{ orderId: string } | null>(null);
+  // Signature
+  const [signatureModal, setSignatureModal] = useState<{ orderId: string } | null>(null);
+  const signatureRef = useRef<React.ElementRef<typeof SignatureScreen>>(null);
+  const [sigUploading, setSigUploading] = useState(false);
+
+  // Auth token for API calls
+  const getToken = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  }, []);
 
   const fetchOrders = useCallback(async () => {
     const { data } = await supabase
@@ -86,12 +93,11 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   useEffect(() => {
     supabase.from('profiles').select('full_name').eq('id', courierId).single()
       .then(({ data }) => setProfile(data));
-    // Load courier profile photo
     supabase.from('couriers').select('profile_photo_url, status').eq('id', courierId).single()
       .then(({ data }) => {
         if (data) {
           setProfile((prev) => prev ? { ...prev, profile_photo_url: data.profile_photo_url } : prev);
-          if (data.status === 'online' || data.status === 'offline' || data.status === 'break') {
+          if (['online', 'offline', 'break', 'busy'].includes(data.status)) {
             setCourierStatus(data.status as CourierStatus);
           }
         }
@@ -115,7 +121,10 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     return () => { socket?.off('courier:new:job'); };
   }, [courierId, fetchOrders]);
 
-  // ── Status Change Logic ──
+  const emitStatus = useCallback((newStatus: CourierStatus) => {
+    getSocket()?.emit('courier:status:change', { courierId, status: newStatus });
+  }, [courierId]);
+
   const applyStatus = async (newStatus: CourierStatus, reason?: string) => {
     const prev = courierStatus;
     setCourierStatus(newStatus);
@@ -126,12 +135,13 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       } else if (newStatus === 'break') {
         stopLocationTracking();
         await supabase.from('couriers').update({ status: 'break', break_reason: reason || null }).eq('id', courierId);
+      } else if (newStatus === 'busy') {
+        await supabase.from('couriers').update({ status: 'busy' }).eq('id', courierId);
       } else {
         stopLocationTracking();
         await supabase.from('couriers').update({ status: 'offline', break_reason: null }).eq('id', courierId);
       }
-      // Notify socket server about status change so admin dashboard updates instantly
-      getSocket()?.emit('courier:status:change', { courierId, status: newStatus });
+      emitStatus(newStatus);
     } catch (err: unknown) {
       setCourierStatus(prev);
       Alert.alert('Hata', err instanceof Error ? err.message : 'Durum değiştirilemedi');
@@ -175,14 +185,15 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`);
   };
 
-  const updateStatus = async (orderId: string, status: string) => {
+  const updateOrderStatus = async (orderId: string, status: string) => {
     await supabase.from('orders').update({ status }).eq('id', orderId);
     setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, status: status as Order['status'] } : o));
   };
 
   const acceptJob = async (order: Order) => {
     setNewJob(null);
-    await updateStatus(order.id, 'assigned');
+    await updateOrderStatus(order.id, 'assigned');
+    await applyStatus('busy');
     fetchOrders();
   };
 
@@ -212,6 +223,22 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     }
   };
 
+  const uploadFileToApi = async (uri: string, fileName: string, mimeType: string, phase: string) => {
+    const token = await getToken();
+    const formData = new FormData();
+    formData.append('file', { uri, type: mimeType, name: fileName } as never);
+    formData.append('phase', phase);
+    const res = await fetch(`${APP_URL}/api/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    if (!res.ok) throw new Error('Upload failed');
+    const { url } = await res.json();
+    return url as string;
+  };
+
+  // ── Camera (pickup & delivery photo) ──────────────────────────────
   const takePhoto = async () => {
     if (!cameraRef.current || !cameraModal) return;
     const photo = await cameraRef.current.takePictureAsync({ quality: 0.6, base64: false });
@@ -221,18 +248,16 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
   const uploadPhoto = async () => {
     if (!photoUri || !cameraModal) return;
     try {
-      const formData = new FormData();
-      formData.append('file', { uri: photoUri, type: 'image/jpeg', name: 'photo.jpg' } as never);
-      formData.append('phase', cameraModal.phase);
-      const res = await fetch(
-        `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/api/upload`,
-        { method: 'POST', body: formData }
-      );
-      const { url } = await res.json();
+      const url = await uploadFileToApi(photoUri, 'photo.jpg', 'image/jpeg', cameraModal.phase);
       const field = cameraModal.phase === 'pickup' ? 'pickup_photo_url' : 'delivery_photo_url';
       await supabase.from('orders').update({ [field]: url }).eq('id', cameraModal.orderId);
       const nextStatus = cameraModal.phase === 'pickup' ? 'pickup' : 'delivered';
-      await updateStatus(cameraModal.orderId, nextStatus);
+      await updateOrderStatus(cameraModal.orderId, nextStatus);
+
+      if (cameraModal.phase === 'delivery') {
+        await applyStatus('online'); // back to online after delivery
+      }
+
       setPhotoUri(null);
       setCameraModal(null);
       Alert.alert('✅', cameraModal.phase === 'pickup' ? 'Paket teslim alındı!' : 'Teslimat tamamlandı!');
@@ -249,6 +274,46 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
     }
     setPhotoUri(null);
     setCameraModal({ orderId, phase });
+  };
+
+  // ── Signature upload ───────────────────────────────────────────────
+  const handleSignatureOK = async (base64DataUrl: string) => {
+    if (!signatureModal) return;
+    setSigUploading(true);
+    try {
+      // Convert base64 data URL to blob-like object for upload
+      const base64 = base64DataUrl.replace(/^data:image\/\w+;base64,/, '');
+      const byteChars = atob(base64);
+      const byteArr = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([byteArr], { type: 'image/png' });
+
+      const token = await getToken();
+      const formData = new FormData();
+      formData.append('file', blob as never, 'signature.png');
+      formData.append('phase', 'delivery');
+      const res = await fetch(`${APP_URL}/api/upload`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      const { url } = await res.json();
+
+      await supabase.from('orders').update({
+        delivery_signature_url: url,
+        delivery_photo_url: url,
+      }).eq('id', signatureModal.orderId);
+      await updateOrderStatus(signatureModal.orderId, 'delivered');
+      await applyStatus('online');
+      setSignatureModal(null);
+      Alert.alert('✅', 'Teslimat tamamlandı!');
+      fetchOrders();
+    } catch {
+      Alert.alert('Hata', 'İmza yüklenemedi');
+    } finally {
+      setSigUploading(false);
+    }
   };
 
   const sd = STATUS_DISPLAY[courierStatus];
@@ -301,15 +366,17 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
               <Text style={styles.actionBtnText}>🗺️ Teslimat Yolu</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: C.orange }]}
-              onPress={() => updateStatus(item.id, 'in_transit')}>
+              onPress={() => updateOrderStatus(item.id, 'in_transit')}>
               <Text style={styles.actionBtnText}>🚀 Yola Çıktım</Text>
             </TouchableOpacity>
           </>
         )}
         {item.status === 'in_transit' && (
-          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: C.green, flex: 1 }]}
-            onPress={() => openCamera(item.id, 'delivery')}>
-            <Text style={styles.actionBtnText}>📷 Teslim Ettim</Text>
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: C.green, flex: 1 }]}
+            onPress={() => setDeliveryChoiceModal({ orderId: item.id })}
+          >
+            <Text style={styles.actionBtnText}>✅ Teslim Ettim</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -321,7 +388,6 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
       {/* ── Header ── */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          {/* Avatar */}
           <TouchableOpacity onPress={onProfile} style={styles.avatar}>
             {profile?.profile_photo_url
               ? <Image source={{ uri: profile.profile_photo_url }} style={styles.avatarImg} />
@@ -338,13 +404,10 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
         </View>
 
         <View style={styles.headerRight}>
-          {/* Status dropdown button */}
-          <TouchableOpacity style={styles.statusBtn} onPress={() => setStatusModal(true)}>
+          <TouchableOpacity style={styles.statusBtn} onPress={() => setStatusModal((v) => !v)}>
             <Text style={styles.statusBtnText}>{sd.emoji} {sd.label}</Text>
-            <Text style={{ color: C.muted, fontSize: 12 }}>▼</Text>
+            <Text style={{ color: C.muted, fontSize: 12 }}>{statusModal ? '▲' : '▼'}</Text>
           </TouchableOpacity>
-
-          {/* Profile & Logout */}
           <TouchableOpacity onPress={onProfile} style={styles.iconBtn}>
             <Text style={{ fontSize: 20 }}>⚙️</Text>
           </TouchableOpacity>
@@ -353,6 +416,30 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {statusModal && (
+        <View style={styles.inlineStatusDropdown}>
+          {(['online', 'break', 'offline'] as CourierStatus[]).map((s) => {
+            const d = STATUS_DISPLAY[s];
+            return (
+              <TouchableOpacity
+                key={s}
+                style={[styles.inlineStatusOption, courierStatus === s && styles.statusOptionActive]}
+                onPress={() => handleStatusSelect(s)}
+              >
+                <Text style={styles.statusOptionEmoji}>{d.emoji}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.statusOptionLabel, { color: d.color }]}>{d.label}</Text>
+                  <Text style={styles.statusOptionDesc}>
+                    {s === 'online' ? 'Konum paylaşımı başlar' : s === 'break' ? 'Mola sebebi sorulur' : 'Konum paylaşımı durur'}
+                  </Text>
+                </View>
+                {courierStatus === s && <Text style={{ color: C.orange }}>✓</Text>}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
 
       {loading
         ? <ActivityIndicator color={C.orange} style={{ marginTop: 40 }} size="large" />
@@ -372,47 +459,18 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
             ListEmptyComponent={
               <View style={styles.empty}>
                 <Text style={styles.emptyEmoji}>
-                  {courierStatus === 'online' ? '📭' : courierStatus === 'break' ? '☕' : '📵'}
+                  {courierStatus === 'online' ? '📭' : courierStatus === 'break' ? '☕' : courierStatus === 'busy' ? '📦' : '📵'}
                 </Text>
                 <Text style={styles.emptyText}>
-                  {courierStatus === 'online'
-                    ? 'Sipariş bekleniyor...'
-                    : courierStatus === 'break'
-                    ? 'Molada – İyi dinlenmeler!'
+                  {courierStatus === 'online' ? 'Sipariş bekleniyor...'
+                    : courierStatus === 'break' ? 'Molada – İyi dinlenmeler!'
+                    : courierStatus === 'busy' ? 'Aktif sipariş işleniyor...'
                     : 'Online olun ve siparişleri görün'}
                 </Text>
               </View>
             }
           />
         )}
-
-      {/* ── Status Selection Modal ── */}
-      <Modal visible={statusModal} transparent animationType="slide">
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setStatusModal(false)} activeOpacity={1}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Durum Seçin</Text>
-            {((['online', 'break', 'offline'] as CourierStatus[]).map((s) => {
-              const d = STATUS_DISPLAY[s];
-              return (
-                <TouchableOpacity
-                  key={s}
-                  style={[styles.statusOption, courierStatus === s && styles.statusOptionActive]}
-                  onPress={() => handleStatusSelect(s)}
-                >
-                  <Text style={styles.statusOptionEmoji}>{d.emoji}</Text>
-                  <View>
-                    <Text style={[styles.statusOptionLabel, { color: d.color }]}>{d.label}</Text>
-                    <Text style={styles.statusOptionDesc}>
-                      {s === 'online' ? 'Konum paylaşımı başlar' : s === 'break' ? 'Mola – sebep sorulur' : 'Konum paylaşımı durur'}
-                    </Text>
-                  </View>
-                  {courierStatus === s && <Text style={{ marginLeft: 'auto', color: C.orange }}>✓</Text>}
-                </TouchableOpacity>
-              );
-            }))}
-          </View>
-        </TouchableOpacity>
-      </Modal>
 
       {/* ── Break Reason Modal ── */}
       <Modal visible={breakModal} transparent animationType="slide">
@@ -518,6 +576,81 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
         </View>
       </Modal>
 
+      {/* ── Delivery Proof Choice Modal ── */}
+      <Modal visible={!!deliveryChoiceModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Teslimat Kanıtı</Text>
+            <Text style={[styles.modalAddr, { textAlign: 'center', marginBottom: 16 }]}>
+              Teslimat kanıtı seçin
+            </Text>
+            <View style={styles.modalBtns}>
+              <TouchableOpacity
+                style={[styles.proofBtn, { backgroundColor: C.orange }]}
+                onPress={() => {
+                  const id = deliveryChoiceModal!.orderId;
+                  setDeliveryChoiceModal(null);
+                  openCamera(id, 'delivery');
+                }}
+              >
+                <Text style={styles.proofBtnEmoji}>📷</Text>
+                <Text style={styles.proofBtnText}>Fotoğraf Çek</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.proofBtn, { backgroundColor: '#1e4976' }]}
+                onPress={() => {
+                  const id = deliveryChoiceModal!.orderId;
+                  setDeliveryChoiceModal(null);
+                  setSignatureModal({ orderId: id });
+                }}
+              >
+                <Text style={styles.proofBtnEmoji}>✍️</Text>
+                <Text style={styles.proofBtnText}>İmza Al</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={{ marginTop: 12, alignItems: 'center' }}
+              onPress={() => setDeliveryChoiceModal(null)}>
+              <Text style={{ color: C.muted }}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Signature Modal ── */}
+      <Modal visible={!!signatureModal} animationType="slide">
+        <View style={{ flex: 1, backgroundColor: C.bg }}>
+          <View style={{ paddingTop: 52, paddingHorizontal: 16, paddingBottom: 8, backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border }}>
+            <Text style={{ color: C.text, fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>✍️ Müşteri İmzası</Text>
+            <Text style={{ color: C.muted, fontSize: 12, textAlign: 'center', marginTop: 4 }}>Müşteriden ekrana imzasını atmasını isteyin</Text>
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <SignatureScreen
+              ref={signatureRef}
+              onOK={handleSignatureOK}
+              onEmpty={() => Alert.alert('Uyarı', 'İmza boş, lütfen imza atın.')}
+              descriptionText=""
+              clearText="Temizle"
+              confirmText={sigUploading ? 'Yükleniyor...' : 'Kaydet'}
+              webStyle={`
+                .m-signature-pad { box-shadow: none; border: none; }
+                .m-signature-pad--body { border: none; }
+                .m-signature-pad--footer { background-color: #0a1628; }
+                .button { background: #f97316; color: white; border-radius: 8px; }
+                .button.clear { background: #1e4976; }
+              `}
+            />
+          </View>
+
+          <TouchableOpacity
+            style={{ backgroundColor: '#1e4976', margin: 16, padding: 14, borderRadius: 12, alignItems: 'center' }}
+            onPress={() => setSignatureModal(null)}
+          >
+            <Text style={{ color: C.text, fontWeight: '700' }}>İptal</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
+
       {/* ── Camera Modal ── */}
       <Modal visible={!!cameraModal} animationType="slide">
         <View style={{ flex: 1, backgroundColor: '#000' }}>
@@ -540,7 +673,7 @@ export default function HomeScreen({ courierId, onLogout, onProfile }: Props) {
               <CameraView ref={cameraRef} style={{ flex: 1 }} facing="back" />
               <View style={{ padding: 24, flexDirection: 'row', justifyContent: 'space-between' }}>
                 <TouchableOpacity style={[styles.camBtn, { backgroundColor: '#1e4976' }]}
-                  onPress={() => setCameraModal(null)}>
+                  onPress={() => { setCameraModal(null); setPhotoUri(null); }}>
                   <Text style={styles.camBtnText}>İptal</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.camBtn, { backgroundColor: C.orange }]}
@@ -561,7 +694,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 16, paddingTop: 52, paddingBottom: 14,
-    backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border,
+    backgroundColor: C.card, borderBottomWidth: 1, borderBottomColor: C.border, zIndex: 20,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -583,6 +716,15 @@ const styles = StyleSheet.create({
   },
   statusBtnText: { color: C.text, fontSize: 13, fontWeight: '600' },
   iconBtn: { padding: 6 },
+  inlineStatusDropdown: {
+    marginHorizontal: 16, marginTop: 8, marginBottom: 4,
+    backgroundColor: C.card, borderRadius: 14, borderWidth: 1, borderColor: C.border,
+    padding: 8, zIndex: 30,
+  },
+  inlineStatusOption: {
+    flexDirection: 'row', alignItems: 'center', padding: 12,
+    borderRadius: 10, borderWidth: 1, borderColor: 'transparent', gap: 10,
+  },
   listContent: { padding: 16, gap: 12 },
   orderCard: { backgroundColor: C.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border },
   orderHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
@@ -604,7 +746,6 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', padding: 60 },
   emptyEmoji: { fontSize: 48, marginBottom: 12 },
   emptyText: { color: C.muted, textAlign: 'center', fontSize: 15 },
-  // Modals
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: C.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
@@ -617,6 +758,9 @@ const styles = StyleSheet.create({
   modalBtns: { flexDirection: 'row', gap: 12, marginTop: 16 },
   modalBtn: { flex: 1, padding: 14, borderRadius: 12, alignItems: 'center' },
   modalBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  proofBtn: { flex: 1, padding: 20, borderRadius: 16, alignItems: 'center', gap: 8 },
+  proofBtnEmoji: { fontSize: 32 },
+  proofBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   statusOption: {
     flexDirection: 'row', alignItems: 'center', padding: 14,
     borderRadius: 12, borderWidth: 1, borderColor: C.border, marginBottom: 8, gap: 12,
