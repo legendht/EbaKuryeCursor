@@ -37,7 +37,7 @@ export default async function AdminCustomersPage() {
             </thead>
             <tbody>
               {(customers || []).map((c: Record<string, unknown>) => {
-                const account = (c.account as { balance: number; credit_limit: number; discount_rate: number }[] | null)?.[0];
+                const account = c.account as { balance: number; credit_limit: number; discount_rate: number } | null;
                 return (
                   <tr key={c.id as string} className="border-b border-[#1e4976]/20 hover:bg-[#1e4976]/10">
                     <td className="px-4 py-3 text-white font-medium">
